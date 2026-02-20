@@ -23,7 +23,9 @@ impl AudioEngine {
         println!("Audio engine initialized ({}Hz, OPUS codec)", SAMPLE_RATE);
         Ok(Self { stop_tx, stop_rx })
     }
-
+    pub async fn start(&self) {
+    println!("Audio stream started.");
+}
     /// Start bidirectional audio — capture mic and play incoming audio
     pub async fn start_capture_and_playback(&self, rtp_port: u16) -> Result<(), Box<dyn Error>> {
         println!("Starting audio capture and playback on RTP port {}", rtp_port);

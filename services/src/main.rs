@@ -1,57 +1,29 @@
-// theOS — Connectivity Daemon
-// Phase 1: Core satellite connectivity + VoIP calling
-// Target: Pixel device over Starlink IP connection
-
 mod network;
 mod voip;
 mod audio;
-
-use std::error::Error;
-use tokio::signal;
+mod config;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() {
     println!("theOS Connectivity Daemon starting...");
 
-    // 1. Initialize network manager — detect and connect to Starlink
-    let net_manager = network::NetworkManager::new().await?;
+    // Load config
+    let sip_config = config::SipConfig::load().expect("Failed to load config.toml");
+    println!("Loaded SIP config for user: {}", sip_config.username);
+
+    // Network
+    let net_manager = network::NetworkManager::new().await.unwrap();
     let link = net_manager.best_link().await;
-    println!("Active link: {:?}", link);
+    println!("Active link: {}", link);
 
-    // 2. Initialize VoIP engine on top of active link
-    let voip_engine = voip::VoipEngine::new(link).await?;
-    println!("VoIP engine ready. SIP address: {}", voip_engine.sip_address());
+    // Audio
+    let audio = audio::AudioEngine::new().unwrap();
+    audio.start().await;
 
-    // 3. Start listening for incoming calls
-    let voip_clone = voip_engine.clone();
-    tokio::spawn(async move {
-        voip_clone.listen_for_calls().await;
-    });
+    // VoIP
+    let voip = voip::VoipEngine::new(link, sip_config).await.unwrap();
+    println!("SIP address: {}", voip.sip_address());
 
-    // 4. CLI for making calls (Phase 1 — no UI yet)
-    cli_dialer(voip_engine).await;
-
-    signal::ctrl_c().await?;
-    println!("Shutting down theOS daemon.");
-    Ok(())
-}
-
-async fn cli_dialer(engine: voip::VoipEngine) {
-    use std::io::{self, BufRead, Write};
-    let stdin = io::stdin();
-    loop {
-        print!("theOS> Enter number to call (or 'quit'): ");
-        io::stdout().flush().unwrap();
-        let mut line = String::new();
-        stdin.lock().read_line(&mut line).unwrap();
-        let input = line.trim();
-        if input == "quit" { break; }
-        if !input.is_empty() {
-            println!("Dialing {}...", input);
-            match engine.make_call(input).await {
-                Ok(_) => println!("Call connected."),
-                Err(e) => println!("Call failed: {}", e),
-            }
-        }
-    }
+    // Make a real test call to device2
+    voip.make_call("theos_device2@sip.linphone.org").await.unwrap();
 }
