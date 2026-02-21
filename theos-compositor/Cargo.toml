@@ -1,0 +1,9 @@
+[package]
+name = "theos-compositor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+calloop = "0.14.4"
+smithay = { version = "0.7.0", features = ["desktop", "wayland_frontend", "renderer_gl"] }
+wayland-server = "0.31.11"
