@@ -36,7 +36,7 @@ impl Contact {
 
 /// The full contact book — stored encrypted on device
 pub struct ContactBook {
-    contacts: HashMap<String, Contact>, // key hex → contact
+    pub contacts: HashMap<String, Contact>, // key hex → contact
 }
 
 impl ContactBook {

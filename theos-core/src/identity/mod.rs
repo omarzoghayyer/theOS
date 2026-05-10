@@ -10,3 +10,6 @@ pub mod exchange;
 pub use keypair::{IdentityKey, KeyPair};
 pub use contact::{Contact, ContactBook};
 pub use exchange::ContactExchange;
+
+pub mod connection;
+pub use connection::{ConnectionRequest, ConnectionResponse, PendingRequests, ConnectionError};
