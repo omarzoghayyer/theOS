@@ -161,13 +161,13 @@ cargo build -p theos-compositor --features compositor
 
 Every phone on earth requires a phone number. Phone numbers require carriers. Carriers require governments to assign spectrum. This creates a single point of control over who can communicate.
 
-theOS removes that dependency entirely. Your identity is math. Your connectivity is satellites. Nobody can take either away.
+theOS removes that dependency entirely. Your identity is math. Your connectivity is satellites. Nobody can take either away . 
 
 ---
 
 ## License
 
-MIT — see [LICENSE] (LICENSE)
+MIT — see [LICENSE](LICENSE)
 
 The network infrastructure (bootstrap servers, relay nodes, DHT coordination layer) is proprietary and operated separately.
 
