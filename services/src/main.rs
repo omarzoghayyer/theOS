@@ -2,6 +2,7 @@ mod network;
 mod voip;
 mod audio;
 mod config;
+mod ipc;
 
 #[tokio::main]
 async fn main() {
