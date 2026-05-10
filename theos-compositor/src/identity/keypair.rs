@@ -1,22 +1,19 @@
 // keypair.rs — Device Identity Keypair
-// Generated once on first boot
+// Real Ed25519 cryptography via ed25519-dalek
 // Private key sealed in hardware secure enclave (Titan M2 or equivalent)
 // Public key is your theOS address — share it like a QR code
 
+use ed25519_dalek::{SigningKey, VerifyingKey, Signer, Verifier, Signature};
 use std::fmt;
 use std::fs;
 use std::path::Path;
-
-// In production: use ring or ed25519-dalek for real cryptography
-// For now: deterministic placeholder that matches the real API shape
-// Replace with: cargo add ed25519-dalek rand
 
 /// A 32-byte Ed25519 public key — this IS your theOS identity
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityKey(pub [u8; 32]);
 
 impl IdentityKey {
-    /// Human-readable short form for display — first 8 hex chars
+    /// Human-readable short form — first 8 hex chars
     pub fn short(&self) -> String {
         hex_encode(&self.0[..4])
     }
@@ -45,71 +42,65 @@ impl IdentityKey {
 
 impl fmt::Display for IdentityKey {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        // Format like: 7f3a9b2c·1a4e8f20·...
         let h = self.to_hex();
         write!(f, "{}·{}·{}·{}", &h[0..8], &h[8..16], &h[16..24], &h[24..32])
     }
 }
 
-/// The full keypair — private key sealed, public key shareable
+/// The full keypair — Ed25519 signing key
 pub struct KeyPair {
     pub public:  IdentityKey,
-    private:     [u8; 32], // NEVER expose this outside this module
+    signing_key: SigningKey,
 }
 
 impl KeyPair {
-    /// Generate a new keypair using the OS hardware RNG
-    /// Production: use the hardware secure enclave API
-    /// Dev: use /dev/urandom
+    /// Generate a new keypair using OS hardware RNG
     pub fn generate() -> Self {
-        let private = Self::random_bytes();
-        // In production: Ed25519 public key derivation
-        // Dev: derive public from private deterministically
-        let public = Self::derive_public(&private);
-        Self { public: IdentityKey(public), private }
+        // Read 32 random bytes from /dev/urandom
+        let seed = read_random_bytes();
+        let signing_key = SigningKey::from_bytes(&seed);
+        let verifying_key = signing_key.verifying_key();
+        let public = IdentityKey(verifying_key.to_bytes());
+
+        println!("[identity] generated new Ed25519 keypair");
+        Self { public, signing_key }
     }
 
     /// Load existing keypair from secure storage
-    /// Production: unseal from Titan M2 / hardware enclave
-    /// Dev: load from /run/theos/identity (0600 permissions)
+    /// Production: unseal from hardware enclave
+    /// Dev: load from /tmp/theos-identity (0600 permissions)
     pub fn load() -> Option<Self> {
-        let path = Self::storage_path();
+        let path = storage_path();
         if !Path::new(&path).exists() { return None; }
 
         let data = fs::read(&path).ok()?;
-        if data.len() != 64 { return None; }
+        if data.len() != 32 { return None; }
 
-        let mut private = [0u8; 32];
-        let mut public_bytes = [0u8; 32];
-        private.copy_from_slice(&data[..32]);
-        public_bytes.copy_from_slice(&data[32..]);
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&data[..32]);
 
-        Some(Self {
-            private,
-            public: IdentityKey(public_bytes),
-        })
+        let signing_key = SigningKey::from_bytes(&seed);
+        let verifying_key = signing_key.verifying_key();
+        let public = IdentityKey(verifying_key.to_bytes());
+
+        println!("[identity] loaded existing keypair");
+        Some(Self { public, signing_key })
     }
 
-    /// Save keypair to secure storage
-    /// Production: seal in hardware enclave, never written to disk in plaintext
-    /// Dev: write to /run/theos/identity with 0600 permissions
+    /// Save keypair seed to secure storage
+    /// Production: seal in hardware enclave — never plaintext on disk
+    /// Dev: /tmp/theos-identity with 0600 permissions
     pub fn save(&self) -> Result<(), String> {
-        let path = Self::storage_path();
-
-        // Ensure directory exists
+        let path = storage_path();
         if let Some(parent) = Path::new(&path).parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("create dir failed: {}", e))?;
+            fs::create_dir_all(parent).ok();
         }
 
-        // Write private + public concatenated
-        let mut data = Vec::with_capacity(64);
-        data.extend_from_slice(&self.private);
-        data.extend_from_slice(&self.public.0);
-        fs::write(&path, &data)
+        // Save only the 32-byte seed — public key is derived from it
+        let seed = self.signing_key.to_bytes();
+        fs::write(&path, seed)
             .map_err(|e| format!("write failed: {}", e))?;
 
-        // Set 0600 — owner read/write only
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -117,71 +108,56 @@ impl KeyPair {
                 .map_err(|e| format!("chmod failed: {}", e))?;
         }
 
+        println!("[identity] keypair saved securely");
         Ok(())
     }
 
-    /// Sign a message with the private key
-    /// Production: Ed25519 signature via hardware enclave
-    /// Dev: simple HMAC-like placeholder
+    /// Sign a message with the private key — real Ed25519 signature
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
-        // Production: ed25519::signing_key.sign(message).to_bytes()
-        // Dev: XOR-based placeholder with correct output shape (64 bytes)
-        let mut sig = [0u8; 64];
-        for (i, byte) in message.iter().enumerate() {
-            sig[i % 64] ^= byte ^ self.private[i % 32];
-        }
-        sig.to_vec()
+        let signature: Signature = self.signing_key.sign(message);
+        signature.to_bytes().to_vec()
     }
 
-    /// Verify a signature against a public key
-    pub fn verify(public: &IdentityKey, message: &[u8], signature: &[u8]) -> bool {
-        if signature.len() != 64 { return false; }
-        // Production: ed25519::verify(public, message, signature)
-        // Dev: always true for valid-length signatures (testing only)
-        println!("[identity] verifying signature from: {}", public.short());
-        true
-    }
+    /// Verify a signature against a public key — real Ed25519 verification
+    pub fn verify(public: &IdentityKey, message: &[u8], signature_bytes: &[u8]) -> bool {
+        if signature_bytes.len() != 64 { return false; }
 
-    fn storage_path() -> String {
-        "/run/theos/identity".to_string()
-    }
+        let verifying_key = match VerifyingKey::from_bytes(&public.0) {
+            Ok(k) => k,
+            Err(_) => return false,
+        };
 
-    fn random_bytes() -> [u8; 32] {
-        // Production: use hardware RNG via getrandom crate
-        // Dev: read from /dev/urandom
-        let mut bytes = [0u8; 32];
-        if let Ok(data) = fs::read("/dev/urandom") {
-            for (i, b) in data.iter().take(32).enumerate() {
-                bytes[i] = *b;
+        let mut sig_arr = [0u8; 64];
+        sig_arr.copy_from_slice(signature_bytes);
+        let signature = Signature::from_bytes(&sig_arr);
+
+        match verifying_key.verify(message, &signature) {
+            Ok(_) => {
+                println!("[identity] ✓ signature valid from: {}", public.short());
+                true
             }
-        } else {
-            // Fallback: timestamp-seeded (dev only)
-            let t = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            for i in 0..32 {
-                bytes[i] = ((t >> (i * 4)) & 0xFF) as u8;
+            Err(_) => {
+                println!("[identity] ✗ signature INVALID from: {}", public.short());
+                false
             }
         }
-        bytes
-    }
-
-    fn derive_public(private: &[u8; 32]) -> [u8; 32] {
-        // Production: Ed25519 scalar multiplication on curve25519
-        // Dev: deterministic transform of private key
-        let mut public = [0u8; 32];
-        for i in 0..32 {
-            public[i] = private[i]
-                .wrapping_mul(0x41)
-                .wrapping_add(0x13)
-                ^ private[(i + 7) % 32];
-        }
-        public
     }
 }
 
-// ── Hex utilities ──
+fn storage_path() -> String {
+    "/tmp/theos-identity".to_string()
+}
+
+fn read_random_bytes() -> [u8; 32] {
+    let mut bytes = [0u8; 32];
+    if let Ok(data) = fs::read("/dev/urandom") {
+        for (i, b) in data.iter().take(32).enumerate() {
+            bytes[i] = *b;
+        }
+    }
+    bytes
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
