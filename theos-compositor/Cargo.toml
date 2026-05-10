@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 chacha20poly1305 = "0.10"
+ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 sha2 = "0.10"
 calloop = "0.14.4"
 input = "0.9.1"

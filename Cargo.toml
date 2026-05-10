@@ -4,5 +4,6 @@ members = [
   "services",
   "services/cap-broker",
   "tools/capctl",
-  "theos-compositor"
+  "theos-compositor",
+  "theos-core"
 ]
