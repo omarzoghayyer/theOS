@@ -24,6 +24,7 @@ use render::{RenderPipeline, ActiveSurface, Surface, TouchState, TransitionState
 #[cfg(feature = "compositor")] use assistant::Assistant;
 #[cfg(feature = "compositor")] use ai_shell::{AiShell, AiShellNav, AiShellState, InputMode};
 #[cfg(feature = "compositor")] use input::{InputManager, InputEvent, Gesture, HardwareButton};
+#[cfg(feature = "compositor")] use messenger_ui::{MessengerView, MessengerScreen, ConvPreview, BubbleData, DeliveryStateUi};
 
 fn main() {
     println!("theOS Wayland Compositor");
@@ -55,6 +56,44 @@ fn run_compositor() {
     let mut dialer    = Dialer::new();
     let mut assistant = Assistant::new();
     let mut ai_shell  = AiShell::new();
+    let mut messenger  = MessengerView::new();
+
+    // Seed demo conversations -- replaced by real ContactBook + MessageStore on device
+    let demo_convs = vec![
+        ConvPreview {
+            contact_name: "Sarah Chen".to_string(),
+            preview_text: "Sounds good, see you then!".to_string(),
+            unread: 2, online: true, typing: false, timestamp: 0,
+        },
+        ConvPreview {
+            contact_name: "Marcus Webb".to_string(),
+            preview_text: "the call quality was perfect".to_string(),
+            unread: 0, online: true, typing: true, timestamp: 0,
+        },
+    ];
+
+    let demo_bubbles = vec![
+        BubbleData {
+            text: "Hey! Got your connection request".to_string(),
+            from_me: false, state: DeliveryStateUi::Delivered,
+            appeared_at: 0.0, timestamp: 0,
+        },
+        BubbleData {
+            text: "First theOS contact! No SIM, no carrier".to_string(),
+            from_me: true, state: DeliveryStateUi::Read,
+            appeared_at: 0.1, timestamp: 0,
+        },
+        BubbleData {
+            text: "The call quality over satellite is incredible".to_string(),
+            from_me: false, state: DeliveryStateUi::Delivered,
+            appeared_at: 0.2, timestamp: 0,
+        },
+        BubbleData {
+            text: "Starlink beam switch happened mid-call and it stayed connected".to_string(),
+            from_me: true, state: DeliveryStateUi::Read,
+            appeared_at: 0.3, timestamp: 0,
+        },
+    ];
 
     println!("[compositor] surfaces initialized");
     println!("[compositor] ai_shell:  {}", ai_shell.name());
@@ -204,6 +243,7 @@ fn run_compositor() {
             }
             AiShellNav::GoToMessages => {
                 println!("[compositor] AI -> messenger");
+                messenger.open_conversation("sarah_chen_key".to_string());
                 let ts = TransitionState::new(ActiveSurface::AiShell, ActiveSurface::Messenger, t);
                 transition = Some(ts);
             }
@@ -253,7 +293,27 @@ fn run_compositor() {
                     println!("[compositor] frame:{} dialer", frame);
                 }
                 ActiveSurface::Messenger => {
-                    println!("[compositor] frame:{} messenger", frame);
+                    // Draw conversation list or open conversation
+                    match &messenger.screen {
+                        MessengerScreen::ConversationList => {
+                            pipeline.draw_conversation_list(
+                                &mut frame_placeholder,
+                                &demo_convs,
+                                t,
+                            );
+                        }
+                        MessengerScreen::Conversation { .. } => {
+                            pipeline.draw_conversation(
+                                &mut frame_placeholder,
+                                "Sarah Chen",
+                                &demo_bubbles,
+                                false,
+                                messenger.scroll_y,
+                                t,
+                            );
+                        }
+                    }
+                    println!("[compositor] frame:{} messenger screen:{:?}", frame, messenger.screen);
                 }
                 ActiveSurface::Home => {
                     println!("[compositor] frame:{} traditional home", frame);
