@@ -10,33 +10,14 @@ name = "theos-daemon"
 path = "src/main.rs"
 
 [dependencies]
-# Async runtime — essential for network I/O
 tokio = { version = "1", features = ["full"] }
-
-# SIP/VoIP (when ready for full SIP stack)
-# rsip = "0.4"
-
-# OPUS audio codec
-# opus = "0.3"
-
-# ALSA audio (Linux)
-# alsa = "0.7"
-
-# Cross-platform audio (alternative to ALSA)
-# cpal = "0.15"
-
-# Networking utilities
-# socket2 = "0.5"
-
-# Serialization (for config files)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# Logging
+toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
 [profile.release]
 opt-level = 3
 lto = true
-strip = true   # Strip debug symbols for smaller binary on device
+strip = true
