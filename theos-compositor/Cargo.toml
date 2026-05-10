@@ -5,5 +5,10 @@ edition = "2024"
 
 [dependencies]
 calloop = "0.14.4"
+input = "0.9.1"
+libc = "0.2.182"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
 smithay = { version = "0.7.0", features = ["desktop", "wayland_frontend", "renderer_gl"] }
+tokio = { version = "1.49.0", features = ["full"] }
 wayland-server = "0.31.11"
