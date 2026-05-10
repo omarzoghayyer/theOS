@@ -10,6 +10,7 @@ mod settings;
 mod keystore;
 mod input;
 mod ai_shell;
+mod crypto;
 
 use render::{RenderPipeline, ActiveSurface, Surface, TouchState};
 use shell::Shell;
