@@ -154,8 +154,14 @@ fn classify_interface(iface: &str) -> LinkType {
 }
 
 fn get_interface_ip(iface: &str) -> Option<String> {
-    // Production: use netlink or parse /proc/net/fib_trie
-    // Stubbed for now
+    // Read real IP from system using local socket trick
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = socket.local_addr() {
+                return Some(addr.ip().to_string());
+            }
+        }
+    }
     match iface {
         "eth0" => Some("192.168.100.2".to_string()),
         "wlan0" => Some("192.168.1.100".to_string()),

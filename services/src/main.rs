@@ -25,5 +25,5 @@ async fn main() {
     println!("SIP address: {}", voip.sip_address());
 
     // Make a real test call to device2
-    voip.make_call("theos_device2@sip.linphone.org").await.unwrap();
-}
+    voip.register().await.unwrap();
+    voip.make_call("theos_device2@sip.linphone.org").await.unwrap();}
