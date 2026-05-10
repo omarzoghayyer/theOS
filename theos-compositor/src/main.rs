@@ -7,6 +7,9 @@ mod ipc;
 mod shell;
 mod dialer;
 mod assistant;
+mod settings;
+mod keystore;
+mod input;
 
 use render::{RenderPipeline, ActiveSurface, Surface, TouchState};
 use shell::Shell;
