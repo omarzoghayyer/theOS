@@ -41,7 +41,7 @@ pub trait Surface {
 pub enum TouchState { Down, Up, Move }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ActiveSurface { Lock, Home, Dialer, Assistant, Settings, AiShell }
+pub enum ActiveSurface { Lock, Home, Dialer, Assistant, Settings, AiShell, Messenger, WebProxy }
 
 // ── Render helpers ──
 // These wrap the smithay GLES frame to make drawing easier
