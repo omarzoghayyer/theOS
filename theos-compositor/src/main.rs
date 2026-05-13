@@ -1,6 +1,6 @@
 // main.rs -- theOS Wayland Compositor
-// Real display server -- no web layer, no browser
-// Runs directly on DRM/KMS hardware via Smithay + GLES
+// Voice-first. No buttons. No visible UI chrome.
+// The AI orb is the only interface.
 
 #[cfg(feature = "compositor")] mod render;
 #[cfg(feature = "compositor")] mod ipc;
@@ -19,7 +19,7 @@ mod identity;
 mod hal;
 
 #[cfg(feature = "compositor")]
-use render::{RenderPipeline, ActiveSurface, Surface, TouchState, TransitionState};
+use render::{RenderPipeline, ActiveSurface, Surface, TouchState, TransitionState, OrbState};
 #[cfg(feature = "compositor")] use shell::Shell;
 #[cfg(feature = "compositor")] use dialer::Dialer;
 #[cfg(feature = "compositor")] use assistant::Assistant;
@@ -27,9 +27,14 @@ use render::{RenderPipeline, ActiveSurface, Surface, TouchState, TransitionState
 #[cfg(feature = "compositor")] use input::{InputManager, InputEvent, Gesture, HardwareButton};
 #[cfg(feature = "compositor")] use messenger_ui::{MessengerView, MessengerScreen, ConvPreview, BubbleData, DeliveryStateUi};
 
+// theos-core voice + power
+use theos_core::wake_word::{WakeEngine, WakeState, strip_wake_word, contains_wake_word};
+use theos_core::power::{PowerManager, PowerState};
+
 fn main() {
     println!("theOS Wayland Compositor");
     println!("Satellite-First Mobile OS");
+    println!("Voice-First Interface -- no buttons");
 
     #[cfg(not(feature = "compositor"))]
     {
@@ -51,15 +56,18 @@ fn now_secs() -> f64 {
 
 #[cfg(feature = "compositor")]
 fn run_compositor() {
+    // -- Initialize core systems ----------------------------------------------
+    let mut wake    = WakeEngine::new();
+    let mut power   = PowerManager::new();
+
     // -- Initialize surfaces --------------------------------------------------
     let mut pipeline  = RenderPipeline::new(1080, 2280);
     let mut shell     = Shell::new();
     let mut dialer    = Dialer::new();
     let mut assistant = Assistant::new();
     let mut ai_shell  = AiShell::new();
-    let mut messenger  = MessengerView::new();
+    let mut messenger = MessengerView::new();
 
-    // Seed demo conversations -- replaced by real ContactBook + MessageStore on device
     let demo_convs = vec![
         ConvPreview {
             contact_name: "Sarah Chen".to_string(),
@@ -84,41 +92,22 @@ fn run_compositor() {
             from_me: true, state: DeliveryStateUi::Read,
             appeared_at: 0.1, timestamp: 0,
         },
-        BubbleData {
-            text: "The call quality over satellite is incredible".to_string(),
-            from_me: false, state: DeliveryStateUi::Delivered,
-            appeared_at: 0.2, timestamp: 0,
-        },
-        BubbleData {
-            text: "Starlink beam switch happened mid-call and it stayed connected".to_string(),
-            from_me: true, state: DeliveryStateUi::Read,
-            appeared_at: 0.3, timestamp: 0,
-        },
     ];
 
     println!("[compositor] surfaces initialized");
-    println!("[compositor] ai_shell:  {}", ai_shell.name());
-    println!("[compositor] shell:     {}", shell.name());
-    println!("[compositor] dialer:    {}", dialer.name());
-    println!("[compositor] assistant: {}", assistant.name());
 
     // -- Initialize input -----------------------------------------------------
     let mut input_mgr = InputManager::new().ok();
     if input_mgr.is_none() {
-        println!("[compositor] input: running without hardware (demo mode)");
+        println!("[compositor] input: demo mode (no hardware)");
     }
 
-    // -- Boot sequence --------------------------------------------------------
-    println!("[compositor] boot -> lock screen");
-    pipeline.navigate(ActiveSurface::Lock);
-
-    // Simulate unlock for demo -- on real hardware this waits for power button
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    shell.unlock();
+    // -- Boot: straight to orb ------------------------------------------------
+    // No lock screen. Identity is the device. Wake word is the key.
     pipeline.navigate(ActiveSurface::AiShell);
-    println!("[compositor] unlocked -> AI orb");
+    println!("[compositor] boot -> AI orb (voice-first)");
 
-    // -- Push initial system state into AI shell ------------------------------
+    // -- Push system state into AI shell --------------------------------------
     ai_shell.update_state(AiShellState {
         handle:         "omar".to_string(),
         pubkey_hex:     "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -131,33 +120,21 @@ fn run_compositor() {
         charging:       shell.charging,
     });
 
-    // -- Transition state (slide-up animation between surfaces) ---------------
-    let mut transition: Option<TransitionState> = None;
+    // -- Frame loop state -----------------------------------------------------
+    let mut transition:   Option<TransitionState> = None;
+    let mut show_text_input = false; // hidden by default, tap orb to show
+    let frame_budget = std::time::Duration::from_millis(16);
 
-    // -- Frame loop -----------------------------------------------------------
-    // Target: 60fps. Each frame:
-    //   1. Poll input
-    //   2. Process AI shell navigation events
-    //   3. Advance transition animation
-    //   4. Draw the active surface (or transition)
-    //
-    // On real hardware this is driven by DRM vblank. In demo mode we use
-    // a simple sleep loop.
+    let demo_mode  = std::env::args().any(|a| a == "--demo");
+    let max_frames = if demo_mode { 300u64 } else { u64::MAX };
 
-    let frame_budget = std::time::Duration::from_millis(16); // ~60fps
-
-    // Demo: run for 300 frames then exit (5 seconds at 60fps)
-    // On real hardware: loop forever until power-off
-    let demo_mode = std::env::args().any(|a| a == "--demo");
-    let max_frames: u64 = if demo_mode { 300 } else { u64::MAX };
-
-    println!("[compositor] entering frame loop (demo_mode: {})", demo_mode);
+    println!("[compositor] frame loop -- voice-first -- demo:{}", demo_mode);
 
     for frame in 0..max_frames {
-        let t = now_secs();
+        let t          = now_secs();
         let frame_start = std::time::Instant::now();
 
-        // -- 1. Poll input ----------------------------------------------------
+        // -- 1. Poll hardware input -------------------------------------------
         let events: Vec<InputEvent> = input_mgr
             .as_mut()
             .map(|im| im.poll())
@@ -165,159 +142,169 @@ fn run_compositor() {
 
         for event in &events {
             match event {
-                InputEvent::Gesture(Gesture::SwipeDown) => {
-                    // Escape hatch: swipe down from AI shell -> traditional home
-                    if pipeline.active_surface == ActiveSurface::AiShell {
-                        let ts = TransitionState::new(
-                            ActiveSurface::AiShell,
-                            ActiveSurface::Home,
-                            t,
-                        );
-                        transition = Some(ts);
-                        println!("[compositor] swipe down -> traditional home");
-                    }
-                }
-                InputEvent::Gesture(Gesture::SwipeUp) => {
-                    // Swipe up from home -> back to AI shell
-                    if pipeline.active_surface == ActiveSurface::Home {
-                        let ts = TransitionState::new(
-                            ActiveSurface::Home,
-                            ActiveSurface::AiShell,
-                            t,
-                        );
-                        transition = Some(ts);
-                        println!("[compositor] swipe up -> AI shell");
-                    }
-                }
+
+                // Power button: toggle sleep
                 InputEvent::Button(HardwareButton::Power) => {
-                    println!("[compositor] power button -> lock");
-                    pipeline.navigate(ActiveSurface::Lock);
-                    transition = None;
-                }
-                InputEvent::TouchDown { x, y } => {
-                    match pipeline.active_surface {
-                        ActiveSurface::AiShell => {
-                            ai_shell.handle_touch(*x, *y, TouchState::Down);
-                        }
-                        ActiveSurface::Home => {
-                            shell.handle_touch(*x, *y, TouchState::Down);
-                        }
-                        ActiveSurface::Dialer => {
-                            dialer.handle_touch(*x, *y, TouchState::Down);
-                        }
-                        _ => {}
+                    if power.is_sleeping() {
+                        power.wake();
+                        wake.force_sleep(); // reset wake engine on manual wake
+                        pipeline.navigate(ActiveSurface::AiShell);
+                        println!("[compositor] power button -> wake");
+                    } else {
+                        power.sleep();
+                        wake.force_sleep();
+                        println!("[compositor] power button -> sleep");
                     }
                 }
+
+                // Tap orb -> show text input (accessibility fallback)
+                InputEvent::TouchDown { x, y } => {
+                    power.on_interaction();
+                    let cx = pipeline.width  / 2;
+                    let cy = pipeline.height / 2;
+                    let dx = (*x as i32 - cx).abs();
+                    let dy = (*y as i32 - cy).abs();
+                    if dx < 80 && dy < 80 {
+                        // Tapped the orb
+                        show_text_input = !show_text_input;
+                        println!("[compositor] orb tap -> text input: {}", show_text_input);
+                    } else {
+                        // Tap anywhere else -> dismiss text input
+                        show_text_input = false;
+                    }
+                }
+
+                // Keyboard input feeds text input when shown
+                InputEvent::KeyPress { ch } => {
+                    if show_text_input {
+                        ai_shell.input_mode = InputMode::Typing;
+                        ai_shell.type_char(*ch);
+                    }
+                }
+                InputEvent::KeyBackspace => {
+                    if show_text_input { ai_shell.backspace(); }
+                }
+                InputEvent::KeyEnter => {
+                    if show_text_input {
+                        ai_shell.input_mode = InputMode::Typing;
+                        let nav = ai_shell.submit_input();
+                        show_text_input = false;
+                        handle_nav(nav, &mut transition, &mut messenger, t);
+                    }
+                }
+                InputEvent::KeyEscape => {
+                    show_text_input = false;
+                    // Escape from any surface -> back to orb
+                    if pipeline.active_surface != ActiveSurface::AiShell {
+                        let ts = TransitionState::new(
+                            pipeline.active_surface,
+                            ActiveSurface::AiShell,
+                            t,
+                        );
+                        transition = Some(ts);
+                    }
+                }
+
                 _ => {}
             }
         }
 
-        // -- 2. Process AI shell navigation -----------------------------------
-        // In the real compositor this is driven by the keyboard/touch input
-        // feeding text into ai_shell.input_buf. For the demo we simulate
-        // a sequence of intents.
-        let nav = if frame == 60 {
-            // Frame 1s: simulate "show connection"
-            ai_shell.input_buf  = "show connection".to_string();
-            ai_shell.input_mode = InputMode::Typing;
-            ai_shell.submit_input()
-        } else if frame == 150 {
-            // Frame 2.5s: simulate "message sarah"
-            ai_shell.input_buf  = "message sarah".to_string();
-            ai_shell.input_mode = InputMode::Typing;
-            ai_shell.submit_input()
-        } else if frame == 240 {
-            // Frame 4s: simulate "call marcus"
-            ai_shell.input_buf  = "call marcus".to_string();
-            ai_shell.input_mode = InputMode::Typing;
-            ai_shell.submit_input()
-        } else {
-            AiShellNav::None
-        };
-
-        // Route navigation to surface transitions
-        match nav {
-            AiShellNav::GoToDialer { ref contact } => {
-                println!("[compositor] AI -> dialer for '{}'", contact);
-                let ts = TransitionState::new(ActiveSurface::AiShell, ActiveSurface::Dialer, t);
-                transition = Some(ts);
+        // -- 2. Wake engine tick ----------------------------------------------
+        // On real device: ADSP fires on_wake_detected() via fastrpc interrupt.
+        // In demo mode: simulate wake at frame 60, command at frame 90.
+        if demo_mode {
+            if frame == 60 {
+                println!("[compositor] [demo] simulating: Hey OS, message Sarah");
+                wake.on_wake_detected();
             }
-            AiShellNav::GoToMessages => {
-                println!("[compositor] AI -> messenger");
-                messenger.open_conversation("sarah_chen_key".to_string());
-                let ts = TransitionState::new(ActiveSurface::AiShell, ActiveSurface::Messenger, t);
-                transition = Some(ts);
+            if frame == 90 {
+                wake.on_command_received("hey os, message sarah".to_string());
             }
-            AiShellNav::GoToSettings => {
-                println!("[compositor] AI -> settings");
-                let ts = TransitionState::new(ActiveSurface::AiShell, ActiveSurface::Settings, t);
-                transition = Some(ts);
+            if frame == 180 {
+                println!("[compositor] [demo] simulating: Hey OS, call Marcus");
+                wake.on_wake_detected();
             }
-            AiShellNav::GoToTraditionalHome => {
-                let ts = TransitionState::new(ActiveSurface::AiShell, ActiveSurface::Home, t);
-                transition = Some(ts);
+            if frame == 210 {
+                wake.on_command_received("hey os, call marcus".to_string());
             }
-            AiShellNav::None => {}
         }
 
-        // -- 3. Advance transition --------------------------------------------
+        wake.tick();
+
+        // Route wake engine commands to navigation
+        if let WakeState::Processing { .. } = &wake.state.clone() {
+            if let Some(command) = wake.current_command() {
+                let command = command.to_string();
+                ai_shell.input_buf  = command.clone();
+                ai_shell.input_mode = InputMode::Typing;
+                let nav = ai_shell.submit_input();
+                wake.on_command_executed();
+
+                // Wake the screen if sleeping
+                if power.is_sleeping() {
+                    power.wake();
+                    pipeline.navigate(ActiveSurface::AiShell);
+                }
+
+                handle_nav(nav, &mut transition, &mut messenger, t);
+            }
+            wake.on_response_complete();
+        }
+
+        // -- 3. Power tick (once per second) ----------------------------------
+        if frame % 60 == 0 {
+            power.tick();
+
+            // Screen off when sleeping
+            if power.is_sleeping() && pipeline.active_surface != ActiveSurface::Lock {
+                pipeline.navigate(ActiveSurface::Lock);
+            }
+        }
+
+        // -- 4. Transition advance --------------------------------------------
         if let Some(ref ts) = transition {
             if ts.is_complete(t) {
-                // Transition done -- snap to final surface
                 let to = ts.to;
                 pipeline.navigate(to);
                 transition = None;
-                println!("[compositor] transition complete -> {:?}", to);
+                println!("[compositor] transition -> {:?}", to);
             }
         }
 
-        // -- 4. Draw ----------------------------------------------------------
-        // (In demo mode we just log -- real GLES draw calls happen here
-        //  when running on PostmarketOS with a DRM/KMS backend)
+        // -- 5. Draw ----------------------------------------------------------
+        // Orb state drives the visual
+        let orb_state = match &wake.state {
+            WakeState::Sleeping        => OrbState::Passive,
+            WakeState::Listening {..}  => OrbState::Listening,
+            WakeState::Processing {..} => OrbState::Processing,
+            WakeState::Responding      => OrbState::Responding,
+        };
 
-        if let Some(ref ts) = transition {
+        if power.is_sleeping() {
+            // Screen off -- nothing to draw
+        } else if let Some(ref ts) = transition {
             let incoming_y = ts.incoming_y(pipeline.height, t);
             println!(
-                "[compositor] frame:{} transition {:?}->{:?} y:{} progress:{:.2}",
-                frame, ts.from, ts.to, incoming_y,
-                ts.progress(t)
+                "[compositor] frame:{} transition {:?}->{:?} y:{} orb:{:?}",
+                frame, ts.from, ts.to, incoming_y, orb_state
             );
         } else {
             match pipeline.active_surface {
                 ActiveSurface::AiShell => {
                     println!(
-                        "[compositor] frame:{} orb t:{:.2} msgs:{}",
-                        frame, t, ai_shell.messages.len()
+                        "[compositor] frame:{} orb:{:?} wake:{} power:{} text_input:{}",
+                        frame,
+                        orb_state,
+                        wake.state.label(),
+                        power.state.label(),
+                        show_text_input,
                     );
+                }
+                ActiveSurface::Messenger => {
+                    println!("[compositor] frame:{} messenger", frame);
                 }
                 ActiveSurface::Dialer => {
                     println!("[compositor] frame:{} dialer", frame);
-                }
-                ActiveSurface::Messenger => {
-                    // Draw conversation list or open conversation
-                    match &messenger.screen {
-                        MessengerScreen::ConversationList => {
-                            pipeline.draw_conversation_list(
-                                &mut frame_placeholder,
-                                &demo_convs,
-                                t,
-                            );
-                        }
-                        MessengerScreen::Conversation { .. } => {
-                            pipeline.draw_conversation(
-                                &mut frame_placeholder,
-                                "Sarah Chen",
-                                &demo_bubbles,
-                                false,
-                                messenger.scroll_y,
-                                t,
-                            );
-                        }
-                    }
-                    println!("[compositor] frame:{} messenger screen:{:?}", frame, messenger.screen);
-                }
-                ActiveSurface::Home => {
-                    println!("[compositor] frame:{} traditional home", frame);
                 }
                 _ => {
                     println!("[compositor] frame:{} {:?}", frame, pipeline.active_surface);
@@ -333,4 +320,44 @@ fn run_compositor() {
     }
 
     println!("[compositor] frame loop complete");
+    println!("[compositor] stats: wakes={} false_wakes={} power={}",
+        wake.total_wakes, wake.false_wakes, power.state.label());
+}
+
+// -- Navigation handler -------------------------------------------------------
+
+#[cfg(feature = "compositor")]
+fn handle_nav(
+    nav:        AiShellNav,
+    transition: &mut Option<TransitionState>,
+    messenger:  &mut MessengerView,
+    t:          f64,
+) {
+    match nav {
+        AiShellNav::GoToDialer { ref contact } => {
+            println!("[compositor] voice -> dialer: {}", contact);
+            *transition = Some(TransitionState::new(
+                ActiveSurface::AiShell, ActiveSurface::Dialer, t
+            ));
+        }
+        AiShellNav::GoToMessages => {
+            println!("[compositor] voice -> messenger");
+            messenger.open_conversation("key".to_string());
+            *transition = Some(TransitionState::new(
+                ActiveSurface::AiShell, ActiveSurface::Messenger, t
+            ));
+        }
+        AiShellNav::GoToSettings => {
+            println!("[compositor] voice -> settings");
+            *transition = Some(TransitionState::new(
+                ActiveSurface::AiShell, ActiveSurface::Settings, t
+            ));
+        }
+        AiShellNav::GoToTraditionalHome => {
+            *transition = Some(TransitionState::new(
+                ActiveSurface::AiShell, ActiveSurface::Home, t
+            ));
+        }
+        AiShellNav::None => {}
+    }
 }

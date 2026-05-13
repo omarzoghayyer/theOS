@@ -17,6 +17,7 @@ ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 sha2 = "0.10"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+theos-core = { path = "../theos-core" }
 tokio = { version = "1.49.0", features = ["full"] }
 calloop      = { version = "0.14.4", optional = true }
 input        = { version = "0.9.1",  optional = true }
