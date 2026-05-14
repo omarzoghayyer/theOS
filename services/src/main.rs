@@ -1,30 +1,33 @@
-mod network;
+// main.rs -- theOS Connectivity Daemon
+// No SIP. No phone numbers. No carriers.
+// Voice calls via Ed25519 identity + ChaCha20 encryption over satellite UDP.
+
 mod voip;
 mod audio;
-mod config;
-mod ipc;
 
 #[tokio::main]
 async fn main() {
-    println!("theOS Connectivity Daemon starting...");
+    println!("[daemon] theOS Connectivity Daemon starting");
 
-    // Load config
-    let sip_config = config::SipConfig::load().expect("Failed to load config.toml");
-    println!("Loaded SIP config for user: {}", sip_config.username);
+    // Identity key -- in production loaded from ARM TrustZone / OP-TEE
+    // Demo: fixed test key, replaced by real Ed25519 keypair on device
+    let my_key = [0xAAu8; 32];
 
-    // Network
-    let net_manager = network::NetworkManager::new().await.unwrap();
-    let link = net_manager.best_link().await;
-    println!("Active link: {}", link);
+    // VoIP engine -- no SIP, no carrier, no phone number
+    let voip = voip::VoipEngine::new(my_key);
+    println!("[daemon] VoIP engine ready -- state:{}", voip.state_label());
 
-    // Audio
-    let audio = audio::AudioEngine::new().unwrap();
-    audio.start().await;
+    // Audio engine
+    match audio::AudioEngine::new() {
+        Ok(_audio) => println!("[daemon] audio engine ready"),
+        Err(e)     => println!("[daemon] audio engine unavailable: {} (ok in dev mode)", e),
+    }
 
-    // VoIP
-    let voip = voip::VoipEngine::new(link, sip_config).await.unwrap();
-    println!("SIP address: {}", voip.sip_address());
+    println!("[daemon] ready -- waiting for IPC commands from compositor");
 
-    // Make a real test call to device2
-    voip.register().await.unwrap();
-    voip.make_call("theos_device2@sip.linphone.org").await.unwrap();}
+    // Production: Unix domain socket IPC loop driven by compositor
+    // Demo: park and wait
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+    }
+}
