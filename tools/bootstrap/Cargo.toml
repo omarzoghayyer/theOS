@@ -1,0 +1,12 @@
+[package]
+name = "theos-bootstrap"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "theos-bootstrap"
+path = "src/main.rs"
+
+[dependencies]
+# Zero dependencies -- pure Rust stdlib only
+# Single binary, deploys anywhere
