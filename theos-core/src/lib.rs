@@ -7,3 +7,4 @@ pub mod camera;
 pub mod power;
 pub mod wake_word;
 pub mod web_proxy;
+pub mod message_store;
