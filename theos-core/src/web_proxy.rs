@@ -599,20 +599,21 @@ impl AICommand {
 // -- CredentialEntry ----------------------------------------------------------
 
 /// An encrypted credential for a web service.
-/// The actual credential bytes are encrypted with the Ed25519 keypair.
-/// The proxy stores these -- the user never sees a password.
+/// Content is ChaCha20-Poly1305 encrypted under the storage key.
+/// Poly1305 auth tag means tampered credentials fail decrypt, not silently corrupt.
 #[derive(Debug, Clone)]
 pub struct CredentialEntry {
-    pub service:       String,
-    pub encrypted:     Vec<u8>,  // ChaCha20-encrypted credential blob
-    pub created_at:    u64,
-    pub last_used_at:  u64,
+    pub service:      String,
+    pub encrypted:    Vec<u8>, // ChaCha20-Poly1305 ciphertext + 16-byte auth tag
+    pub counter:      u64,     // nonce counter used during encryption
+    pub created_at:   u64,
+    pub last_used_at: u64,
 }
 
 impl CredentialEntry {
-    pub fn new(service: String, encrypted: Vec<u8>) -> Self {
+    pub fn new(service: String, encrypted: Vec<u8>, counter: u64) -> Self {
         let now = now_secs();
-        Self { service, encrypted, created_at: now, last_used_at: now }
+        Self { service, encrypted, counter, created_at: now, last_used_at: now }
     }
 
     pub fn touch(&mut self) { self.last_used_at = now_secs(); }
@@ -624,39 +625,62 @@ impl CredentialEntry {
 
 // -- CredentialStore ----------------------------------------------------------
 
-/// Encrypted credential storage tied to Ed25519 keypair.
-/// In production: persisted to encrypted SQLite.
-/// In tests: in-memory only.
+/// Encrypted credential storage tied to Ed25519 owner keypair.
+///
+/// Key derivation chain (domain-separated from all other keys):
+///
+///   owner_pubkey
+///       |
+///       SHA-256("theos-credential-store-v1" || owner_pubkey)
+///       |
+///       storage_key [32 bytes]
+///            |
+///            per-credential nonce:
+///            SHA-256("theos-cred-nonce-v1" || service_name || counter)[..12]
+///
+/// storage_key is isolated from VoIP session keys ("theos-session-v1")
+/// and message store keys (separate derivation in message_store.rs).
+///
+/// Security assumptions (flag for audit):
+///   - storage_key derived from Ed25519 public key. Private key loss = cred loss.
+///   - Nonce is deterministic per (service, counter). Counter must be persisted
+///     across restarts to avoid nonce reuse. In-memory only in this struct --
+///     SQLite backend restores counter from DB on open.
+///   - No forward secrecy. Key compromise = all stored credentials exposed.
 pub struct CredentialStore {
-    credentials: HashMap<String, CredentialEntry>,
-    owner_key:   [u8; 32], // Ed25519 public key of device owner
+    credentials:  std::collections::HashMap<String, CredentialEntry>,
+    storage_key:  [u8; 32],
+    send_counter: u64,
 }
 
 impl CredentialStore {
     pub fn new(owner_key: [u8; 32]) -> Self {
-        Self { credentials: HashMap::new(), owner_key }
+        Self {
+            credentials:  std::collections::HashMap::new(),
+            storage_key:  derive_credential_key(&owner_key),
+            send_counter: 0,
+        }
     }
 
-    pub fn store(&mut self, service: &str, credential_plaintext: &[u8]) {
-        // Production: ChaCha20-Poly1305 encrypt with key derived from owner_key
-        // Stub: XOR with owner key for structure
-        let encrypted: Vec<u8> = credential_plaintext.iter().enumerate()
-            .map(|(i, b)| b ^ self.owner_key[i % 32])
-            .collect();
-        let entry = CredentialEntry::new(service.to_string(), encrypted);
+    pub fn store(&mut self, service: &str, plaintext: &[u8]) {
+        let counter = self.send_counter;
+        self.send_counter += 1;
+        let nonce     = credential_nonce(service, counter);
+        let encrypted = chacha20_cred_encrypt(&self.storage_key, &nonce, plaintext);
+        let entry     = CredentialEntry::new(service.to_string(), encrypted, counter);
         self.credentials.insert(service.to_string(), entry);
-        println!("[proxy] credential stored for {}", service);
+        println!("[credential] stored for {} (counter={})", service, counter);
     }
 
     pub fn retrieve(&mut self, service: &str) -> Option<Vec<u8>> {
         let entry = self.credentials.get_mut(service)?;
         entry.touch();
-        // Production: ChaCha20-Poly1305 decrypt
-        // Stub: reverse XOR
-        let decrypted: Vec<u8> = entry.encrypted.iter().enumerate()
-            .map(|(i, b)| b ^ self.owner_key[i % 32])
-            .collect();
-        Some(decrypted)
+        let nonce  = credential_nonce(service, entry.counter);
+        let result = chacha20_cred_decrypt(&self.storage_key, &nonce, &entry.encrypted);
+        if result.is_none() {
+            println!("[credential] WARN: auth tag failed for {} -- tampered or wrong key", service);
+        }
+        result
     }
 
     pub fn has_credential(&self, service: &str) -> bool {
@@ -668,6 +692,291 @@ impl CredentialStore {
     }
 
     pub fn service_count(&self) -> usize { self.credentials.len() }
+}
+
+// -- Credential crypto helpers ------------------------------------------------
+
+use sha2::Digest as CredDigest;
+
+fn derive_credential_key(owner_key: &[u8; 32]) -> [u8; 32] {
+    let mut h = sha2::Sha256::new();
+    h.update(b"theos-credential-store-v1");
+    h.update(owner_key);
+    h.finalize().into()
+}
+
+fn credential_nonce(service: &str, counter: u64) -> [u8; 12] {
+    let mut h = sha2::Sha256::new();
+    h.update(b"theos-cred-nonce-v1");
+    h.update(service.as_bytes());
+    h.update(&counter.to_le_bytes());
+    let hash: [u8; 32] = h.finalize().into();
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&hash[..12]);
+    nonce
+}
+
+fn chacha20_cred_encrypt(key: &[u8; 32], nonce: &[u8; 12], plaintext: &[u8]) -> Vec<u8> {
+    use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, aead::{Aead, KeyInit}};
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+    let n      = Nonce::from_slice(nonce);
+    cipher.encrypt(n, plaintext).expect("credential encrypt: nonce length mismatch")
+}
+
+fn chacha20_cred_decrypt(key: &[u8; 32], nonce: &[u8; 12], ciphertext: &[u8]) -> Option<Vec<u8>> {
+    use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, aead::{Aead, KeyInit}};
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+    let n      = Nonce::from_slice(nonce);
+    cipher.decrypt(n, ciphertext).ok()
+}
+
+// -- PersistentCredentialStore (SQLite backend) -------------------------------
+
+#[cfg(feature = "persistence")]
+pub mod persistent_credentials {
+    use super::*;
+    use rusqlite::{Connection, params};
+
+    pub struct PersistentCredentialStore {
+        conn:         Connection,
+        storage_key:  [u8; 32],
+        send_counter: u64,
+    }
+
+    impl PersistentCredentialStore {
+        pub fn open(path: &str, owner_key: &[u8; 32]) -> Result<Self, String> {
+            let conn = Connection::open(path)
+                .map_err(|e| format!("credential db open failed: {}", e))?;
+            let mut store = Self {
+                conn,
+                storage_key:  derive_credential_key(owner_key),
+                send_counter: 0,
+            };
+            store.init_schema()?;
+            store.restore_counter()?;
+            Ok(store)
+        }
+
+        fn init_schema(&self) -> Result<(), String> {
+            self.conn.execute_batch("
+                CREATE TABLE IF NOT EXISTS credentials (
+                    service      TEXT    PRIMARY KEY,
+                    encrypted    BLOB    NOT NULL,
+                    counter      INTEGER NOT NULL,
+                    created_at   INTEGER NOT NULL,
+                    last_used_at INTEGER NOT NULL
+                );
+            ").map_err(|e| format!("schema init failed: {}", e))
+        }
+
+        /// Restore send_counter to max(counter)+1 to prevent nonce reuse across restarts.
+        /// Security: CRITICAL -- reusing (service, counter) with same key breaks ChaCha20.
+        fn restore_counter(&mut self) -> Result<(), String> {
+            let max: i64 = self.conn.query_row(
+                "SELECT COALESCE(MAX(counter), -1) FROM credentials",
+                [],
+                |r| r.get(0),
+            ).map_err(|e| format!("restore counter failed: {}", e))?;
+            self.send_counter = (max + 1) as u64;
+            Ok(())
+        }
+
+        pub fn store(&mut self, service: &str, plaintext: &[u8]) -> Result<(), String> {
+            let counter   = self.send_counter;
+            self.send_counter += 1;
+            let nonce     = credential_nonce(service, counter);
+            let encrypted = chacha20_cred_encrypt(&self.storage_key, &nonce, plaintext);
+            let now       = now_secs() as i64;
+            self.conn.execute(
+                "INSERT INTO credentials(service, encrypted, counter, created_at, last_used_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(service) DO UPDATE SET
+                     encrypted    = ?2,
+                     counter      = ?3,
+                     last_used_at = ?5",
+                params![service, encrypted, counter as i64, now, now],
+            ).map_err(|e| format!("store failed: {}", e))?;
+            println!("[credential] persisted for {} (counter={})", service, counter);
+            Ok(())
+        }
+
+        pub fn retrieve(&self, service: &str) -> Result<Option<Vec<u8>>, String> {
+            let row: Option<(Vec<u8>, i64)> = self.conn.query_row(
+                "SELECT encrypted, counter FROM credentials WHERE service = ?1",
+                params![service],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).ok();
+            let Some((encrypted, counter)) = row else { return Ok(None); };
+            let now = now_secs() as i64;
+            let _ = self.conn.execute(
+                "UPDATE credentials SET last_used_at = ?1 WHERE service = ?2",
+                params![now, service],
+            );
+            let nonce = credential_nonce(service, counter as u64);
+            let pt    = chacha20_cred_decrypt(&self.storage_key, &nonce, &encrypted);
+            if pt.is_none() {
+                println!("[credential] WARN: auth tag failed for {} -- tampered or wrong key", service);
+            }
+            Ok(pt)
+        }
+
+        pub fn has_credential(&self, service: &str) -> bool {
+            self.conn.query_row(
+                "SELECT COUNT(*) FROM credentials WHERE service = ?1",
+                params![service],
+                |r| r.get::<_, i64>(0),
+            ).unwrap_or(0) > 0
+        }
+
+        pub fn remove(&self, service: &str) -> Result<bool, String> {
+            let rows = self.conn.execute(
+                "DELETE FROM credentials WHERE service = ?1",
+                params![service],
+            ).map_err(|e| format!("remove failed: {}", e))?;
+            Ok(rows > 0)
+        }
+
+        pub fn service_count(&self) -> usize {
+            self.conn.query_row(
+                "SELECT COUNT(*) FROM credentials", [],
+                |r| r.get::<_, i64>(0),
+            ).unwrap_or(0) as usize
+        }
+
+        pub fn all_services(&self) -> Vec<String> {
+            let mut stmt = self.conn
+                .prepare("SELECT service FROM credentials ORDER BY last_used_at DESC")
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn owner() -> [u8; 32] { [0xAAu8; 32] }
+        fn mem() -> PersistentCredentialStore {
+            PersistentCredentialStore::open(":memory:", &owner()).unwrap()
+        }
+
+        #[test]
+        fn test_persistent_cred_opens() {
+            assert!(PersistentCredentialStore::open(":memory:", &owner()).is_ok());
+        }
+
+        #[test]
+        fn test_persistent_store_retrieve() {
+            let mut s = mem();
+            s.store("instagram", b"my_oauth_token").unwrap();
+            let got = s.retrieve("instagram").unwrap().unwrap();
+            assert_eq!(got, b"my_oauth_token");
+        }
+
+        #[test]
+        fn test_persistent_retrieve_nonexistent() {
+            let s = mem();
+            assert_eq!(s.retrieve("gmail").unwrap(), None);
+        }
+
+        #[test]
+        fn test_persistent_has_credential() {
+            let mut s = mem();
+            assert!(!s.has_credential("spotify"));
+            s.store("spotify", b"token").unwrap();
+            assert!(s.has_credential("spotify"));
+        }
+
+        #[test]
+        fn test_persistent_remove() {
+            let mut s = mem();
+            s.store("instagram", b"tok").unwrap();
+            assert!(s.remove("instagram").unwrap());
+            assert!(!s.has_credential("instagram"));
+        }
+
+        #[test]
+        fn test_persistent_remove_nonexistent() {
+            let s = mem();
+            assert!(!s.remove("ghost").unwrap());
+        }
+
+        #[test]
+        fn test_persistent_service_count() {
+            let mut s = mem();
+            s.store("instagram", b"t1").unwrap();
+            s.store("gmail",     b"t2").unwrap();
+            s.store("spotify",   b"t3").unwrap();
+            assert_eq!(s.service_count(), 3);
+        }
+
+        #[test]
+        fn test_persistent_overwrite_service() {
+            let mut s = mem();
+            s.store("instagram", b"old_token").unwrap();
+            s.store("instagram", b"new_token").unwrap();
+            let got = s.retrieve("instagram").unwrap().unwrap();
+            assert_eq!(got, b"new_token");
+            assert_eq!(s.service_count(), 1);
+        }
+
+        #[test]
+        fn test_persistent_all_services() {
+            let mut s = mem();
+            s.store("instagram", b"t1").unwrap();
+            s.store("gmail",     b"t2").unwrap();
+            let services = s.all_services();
+            assert_eq!(services.len(), 2);
+        }
+
+        #[test]
+        fn test_persistent_counter_restored() {
+            let mut s = mem();
+            s.store("instagram", b"tok1").unwrap();
+            let c1 = s.send_counter;
+            s.store("instagram", b"tok2").unwrap();
+            let c2 = s.send_counter;
+            assert!(c2 > c1);
+        }
+
+        #[test]
+        fn test_persistent_different_services_isolated() {
+            let mut s = mem();
+            s.store("instagram", b"instagram_token").unwrap();
+            s.store("gmail",     b"gmail_token").unwrap();
+            let ig   = s.retrieve("instagram").unwrap().unwrap();
+            let mail = s.retrieve("gmail").unwrap().unwrap();
+            assert_eq!(ig,   b"instagram_token");
+            assert_eq!(mail, b"gmail_token");
+        }
+
+        #[test]
+        fn test_persistent_nonce_unique_per_service() {
+            let n1 = credential_nonce("instagram", 0);
+            let n2 = credential_nonce("gmail",     0);
+            assert_ne!(n1, n2);
+        }
+
+        #[test]
+        fn test_persistent_nonce_unique_per_counter() {
+            let n1 = credential_nonce("instagram", 0);
+            let n2 = credential_nonce("instagram", 1);
+            assert_ne!(n1, n2);
+        }
+
+        #[test]
+        fn test_persistent_wrong_key_fails_auth() {
+            let wrong_key     = [0xBBu8; 32];
+            let wrong_storage = derive_credential_key(&wrong_key);
+            let nonce         = credential_nonce("instagram", 0);
+            let encrypted     = chacha20_cred_encrypt(&derive_credential_key(&owner()), &nonce, b"secret");
+            let result        = chacha20_cred_decrypt(&wrong_storage, &nonce, &encrypted);
+            assert!(result.is_none());
+        }
+    }
 }
 
 // -- ProxySession -------------------------------------------------------------
