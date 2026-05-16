@@ -119,11 +119,11 @@ impl ServiceRegistry {
         });
 
         r.register(ServiceEntry {
-            name:         "twitter".to_string(),
-            url:          "https://twitter.com".to_string(),
-            aliases:      vec!["x".to_string(), "x.com".to_string()],
+            name:         "x".to_string(),
+            url:          "https://x.com".to_string(),
+            aliases:      vec!["twitter".to_string(), "x.com".to_string()],
             category:     ServiceCategory::Social,
-            requires_auth: false,
+            requires_auth: true,
             mobile_url:   None,
         });
 
@@ -574,9 +574,21 @@ impl AICommand {
                     return Some(AICommand::Navigate { url: "https://mail.google.com/mail/u/0/#inbox".to_string() });
                 }
             }
-            "twitter" => {
+            "x" | "twitter" => {
                 if s.contains("tweet") || s.contains("post") {
-                    return Some(AICommand::Click { target: "tweet button".to_string() });
+                    return Some(AICommand::Click { target: "new post button".to_string() });
+                }
+                if s.contains("search") {
+                    return Some(AICommand::Click { target: "search box".to_string() });
+                }
+                if s.contains("notification") {
+                    return Some(AICommand::Click { target: "notifications".to_string() });
+                }
+                if s.contains("profile") || s.contains("my page") {
+                    return Some(AICommand::Click { target: "profile".to_string() });
+                }
+                if s.contains("home") || s.contains("feed") {
+                    return Some(AICommand::Navigate { url: "https://x.com/home".to_string() });
                 }
             }
             _ => {}
@@ -1470,4 +1482,370 @@ mod tests {
         assert_eq!(ServiceCategory::Social.label(), "social");
         assert_eq!(ServiceCategory::Video.label(), "video");
     }
+
+// -- XLoginFlow --------------------------------------------------------------
+
+/// Login state machine for X (Twitter).
+/// Tracks where we are in the OAuth/credential flow.
+///
+/// Flow:
+///   NeedsLogin        -- no credential stored, need to prompt user
+///   HasCredential     -- credential found in store, attempt auto-login
+///   EnteringUsername  -- sandbox waiting for username input
+///   EnteringPassword  -- sandbox waiting for password input
+///   Submitting        -- form submitted, waiting for redirect
+///   Authenticated     -- logged in, session active
+///   Failed(reason)    -- login attempt failed
+#[derive(Debug, Clone, PartialEq)]
+pub enum XLoginState {
+    NeedsLogin,
+    HasCredential,
+    EnteringUsername,
+    EnteringPassword,
+    Submitting,
+    Authenticated,
+    Failed(String),
+}
+
+impl XLoginState {
+    pub fn label(&self) -> &str {
+        match self {
+            XLoginState::NeedsLogin       => "needs_login",
+            XLoginState::HasCredential    => "has_credential",
+            XLoginState::EnteringUsername => "entering_username",
+            XLoginState::EnteringPassword => "entering_password",
+            XLoginState::Submitting       => "submitting",
+            XLoginState::Authenticated    => "authenticated",
+            XLoginState::Failed(_)        => "failed",
+        }
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        matches!(self, XLoginState::Authenticated)
+    }
+
+    pub fn is_failed(&self) -> bool {
+        matches!(self, XLoginState::Failed(_))
+    }
+}
+
+/// X login credential blob.
+/// Stored encrypted in CredentialStore under key "x".
+/// Format: "username:password" as UTF-8 bytes.
+/// Production: replace with OAuth token storage.
+///
+/// Security assumption (flag for audit):
+///   Storing username+password is simpler than OAuth for v1.
+///   OAuth token rotation should replace this in Phase 2 hardening.
+#[derive(Debug, Clone)]
+pub struct XCredential {
+    pub username: String,
+    pub password: String,
+}
+
+impl XCredential {
+    pub fn new(username: &str, password: &str) -> Self {
+        Self { username: username.to_string(), password: password.to_string() }
+    }
+
+    /// Serialize to encrypted blob format: "username:password"
+    /// The colon separator is safe -- X usernames cannot contain colons.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        format!("{}:{}", self.username, self.password).into_bytes()
+    }
+
+    /// Deserialize from decrypted blob.
+    /// Returns None if format is invalid (corrupted or wrong key).
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let s = std::str::from_utf8(bytes).ok()?;
+        let mut parts = s.splitn(2, ':');
+        let username = parts.next()?.to_string();
+        let password = parts.next()?.to_string();
+        if username.is_empty() || password.is_empty() { return None; }
+        Some(Self { username, password })
+    }
+}
+
+// -- ProxyManager X login methods ---------------------------------------------
+
+impl ProxyManager {
+    /// Check if X has a stored credential.
+    pub fn x_has_credential(&self) -> bool {
+        self.credentials.has_credential("x")
+    }
+
+    /// Store X credentials encrypted in CredentialStore.
+    /// Called after user types username+password for the first time.
+    pub fn x_store_credential(&mut self, username: &str, password: &str) {
+        let cred = XCredential::new(username, password);
+        self.credentials.store("x", &cred.to_bytes());
+        println!("[x-login] credential stored for @{}", username);
+    }
+
+    /// Retrieve and decrypt X credentials.
+    /// Returns None if not stored or auth tag fails (tampered).
+    pub fn x_load_credential(&mut self) -> Option<XCredential> {
+        let bytes = self.credentials.retrieve("x")?;
+        let cred  = XCredential::from_bytes(&bytes)?;
+        println!("[x-login] credential loaded for @{}", cred.username);
+        Some(cred)
+    }
+
+    /// Remove stored X credentials (user logged out).
+    pub fn x_clear_credential(&mut self) -> bool {
+        let removed = self.credentials.remove("x");
+        if removed { println!("[x-login] credential cleared"); }
+        removed
+    }
+
+    /// Open X with login flow.
+    ///
+    /// Returns:
+    ///   Ok((url, state)) where state indicates what the sandbox should do next:
+    ///     HasCredential    -> sandbox auto-fills login form and submits
+    ///     NeedsLogin       -> sandbox shows login prompt to user
+    ///     Authenticated    -> (future) session cookie already valid, go direct
+    ///
+    /// The sandbox.rs layer reads the state and drives WebKit accordingly.
+    pub fn open_x(&mut self) -> Result<(String, XLoginState), String> {
+        // Close any existing session
+        if let Some(ref mut s) = self.session {
+            s.close();
+        }
+
+        let url   = "https://x.com/i/flow/login".to_string();
+        let state = if self.x_has_credential() {
+            println!("[x-login] credential found -- attempting auto-login");
+            XLoginState::HasCredential
+        } else {
+            println!("[x-login] no credential -- prompting user");
+            XLoginState::NeedsLogin
+        };
+
+        let mut session = ProxySession::new("x", &url);
+        session.start_loading();
+        self.session = Some(session);
+
+        Ok((url, state))
+    }
+
+    /// Generate the AICommands the sandbox should execute to auto-login.
+    /// Called by sandbox.rs after page loads when state == HasCredential.
+    /// Returns None if credential is missing or corrupted.
+    pub fn x_autologin_commands(&mut self) -> Option<Vec<AICommand>> {
+        let cred = self.x_load_credential()?;
+        Some(vec![
+            // X login flow: username field first, then password on next screen
+            AICommand::Click  { target: "username or email field".to_string() },
+            AICommand::Type   { text: cred.username.clone() },
+            AICommand::Submit,
+            // After username, X shows password screen
+            AICommand::Click  { target: "password field".to_string() },
+            AICommand::Type   { text: cred.password },
+            AICommand::Submit,
+        ])
+    }
+
+    /// Called by sandbox.rs when login succeeds (redirect to x.com/home).
+    pub fn x_on_authenticated(&mut self) {
+        println!("[x-login] authenticated -- session active");
+        if let Some(ref mut s) = self.session {
+            s.on_loaded(Some("X / Home".to_string()));
+        }
+    }
+
+    /// Called by sandbox.rs when login fails.
+    pub fn x_on_failed(&mut self, reason: &str) {
+        println!("[x-login] failed: {}", reason);
+        // Clear bad credential so user is prompted again next time
+        self.x_clear_credential();
+        if let Some(ref mut s) = self.session {
+            s.on_error(format!("X login failed: {}", reason));
+        }
+    }
+}
+
+// -- Tests --------------------------------------------------------------------
+
+#[cfg(test)]
+mod x_login_tests {
+    use super::*;
+
+    fn owner() -> [u8; 32] { [0xAAu8; 32] }
+    fn manager() -> ProxyManager { ProxyManager::new(owner()) }
+
+    // XCredential serialization
+
+    #[test]
+    fn test_xcred_roundtrip() {
+        let c = XCredential::new("omar", "hunter2");
+        let bytes = c.to_bytes();
+        let c2 = XCredential::from_bytes(&bytes).unwrap();
+        assert_eq!(c2.username, "omar");
+        assert_eq!(c2.password, "hunter2");
+    }
+
+    #[test]
+    fn test_xcred_from_bytes_invalid() {
+        assert!(XCredential::from_bytes(b"nocolon").is_none());
+        assert!(XCredential::from_bytes(b"").is_none());
+        assert!(XCredential::from_bytes(b":nouser").is_none());
+        assert!(XCredential::from_bytes(b"user:").is_none());
+    }
+
+    #[test]
+    fn test_xcred_colon_in_password() {
+        // Password can contain colons -- splitn(2) handles this
+        let c = XCredential::new("omar", "pass:with:colons");
+        let bytes = c.to_bytes();
+        let c2 = XCredential::from_bytes(&bytes).unwrap();
+        assert_eq!(c2.password, "pass:with:colons");
+    }
+
+    // XLoginState
+
+    #[test]
+    fn test_login_state_labels() {
+        assert_eq!(XLoginState::NeedsLogin.label(),       "needs_login");
+        assert_eq!(XLoginState::HasCredential.label(),    "has_credential");
+        assert_eq!(XLoginState::Authenticated.label(),    "authenticated");
+        assert_eq!(XLoginState::Failed("x".to_string()).label(), "failed");
+    }
+
+    #[test]
+    fn test_login_state_authenticated() {
+        assert!( XLoginState::Authenticated.is_authenticated());
+        assert!(!XLoginState::NeedsLogin.is_authenticated());
+    }
+
+    #[test]
+    fn test_login_state_failed() {
+        assert!( XLoginState::Failed("bad pw".to_string()).is_failed());
+        assert!(!XLoginState::Authenticated.is_failed());
+    }
+
+    // ProxyManager X login flow
+
+    #[test]
+    fn test_no_credential_initially() {
+        let m = manager();
+        assert!(!m.x_has_credential());
+    }
+
+    #[test]
+    fn test_store_and_load_credential() {
+        let mut m = manager();
+        m.x_store_credential("omar", "hunter2");
+        assert!(m.x_has_credential());
+        let cred = m.x_load_credential().unwrap();
+        assert_eq!(cred.username, "omar");
+        assert_eq!(cred.password, "hunter2");
+    }
+
+    #[test]
+    fn test_clear_credential() {
+        let mut m = manager();
+        m.x_store_credential("omar", "hunter2");
+        assert!(m.x_clear_credential());
+        assert!(!m.x_has_credential());
+    }
+
+    #[test]
+    fn test_clear_nonexistent_credential() {
+        let mut m = manager();
+        assert!(!m.x_clear_credential());
+    }
+
+    #[test]
+    fn test_open_x_needs_login_when_no_credential() {
+        let mut m = manager();
+        let (url, state) = m.open_x().unwrap();
+        assert!(url.contains("x.com"));
+        assert_eq!(state, XLoginState::NeedsLogin);
+        assert!(m.has_session());
+    }
+
+    #[test]
+    fn test_open_x_has_credential_when_stored() {
+        let mut m = manager();
+        m.x_store_credential("omar", "hunter2");
+        let (url, state) = m.open_x().unwrap();
+        assert!(url.contains("x.com"));
+        assert_eq!(state, XLoginState::HasCredential);
+    }
+
+    #[test]
+    fn test_autologin_commands_with_credential() {
+        let mut m = manager();
+        m.x_store_credential("omar", "hunter2");
+        let cmds = m.x_autologin_commands().unwrap();
+        assert_eq!(cmds.len(), 6);
+        // Should contain Type commands with username and password
+        let has_username = cmds.iter().any(|c| matches!(c, AICommand::Type { text } if text == "omar"));
+        let has_password = cmds.iter().any(|c| matches!(c, AICommand::Type { text } if text == "hunter2"));
+        assert!(has_username, "missing username Type command");
+        assert!(has_password, "missing password Type command");
+    }
+
+    #[test]
+    fn test_autologin_commands_no_credential() {
+        let mut m = manager();
+        assert!(m.x_autologin_commands().is_none());
+    }
+
+    #[test]
+    fn test_on_authenticated_sets_session_active() {
+        let mut m = manager();
+        m.x_store_credential("omar", "hunter2");
+        m.open_x().unwrap();
+        m.x_on_authenticated();
+        assert!(m.session_state().unwrap().is_active());
+    }
+
+    #[test]
+    fn test_on_failed_clears_credential() {
+        let mut m = manager();
+        m.x_store_credential("omar", "wrongpassword");
+        m.open_x().unwrap();
+        m.x_on_failed("wrong password");
+        // Credential should be cleared so user is prompted again
+        assert!(!m.x_has_credential());
+    }
+
+    #[test]
+    fn test_credential_encrypted_at_rest() {
+        let mut m = manager();
+        m.x_store_credential("omar", "hunter2");
+        // The stored bytes should NOT contain plaintext password
+        let entry = m.credentials.credentials.get("x").unwrap();
+        let raw = &entry.encrypted;
+        assert!(!raw.windows(7).any(|w| w == b"hunter2"),
+            "password found in plaintext in encrypted blob");
+    }
+
+    #[test]
+    fn test_resolve_x_by_alias() {
+        let r = ServiceRegistry::new();
+        let entry = r.resolve("twitter").unwrap();
+        assert_eq!(entry.name, "x");
+        assert!(entry.url.contains("x.com"));
+        assert!(entry.requires_auth);
+    }
+
+    #[test]
+    fn test_resolve_x_direct() {
+        let r = ServiceRegistry::new();
+        let entry = r.resolve("x").unwrap();
+        assert_eq!(entry.name, "x");
+        assert!(entry.requires_auth);
+    }
+
+    #[test]
+    fn test_open_x_creates_session() {
+        let mut m = manager();
+        m.open_x().unwrap();
+        assert_eq!(m.active_service(), Some("x"));
+    }
+}
+
 }
