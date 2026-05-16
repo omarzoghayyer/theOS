@@ -31,6 +31,8 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, aead::{Aead, KeyInit}};
+use sha2::{Sha256, Digest};
 
 // -- Constants ----------------------------------------------------------------
 
@@ -339,23 +341,17 @@ pub fn derive_session_key(
     key_b:      &[u8; 32],
     session_id: u64,
 ) -> [u8; 32] {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    // Sort keys so both sides get same result regardless of caller/callee
-    let (first, second) = if key_a < key_b { (key_a, key_b) } else { (key_b, key_a) };
-
-    // Production: use SHA-256 via sha2 crate
-    // Here: deterministic derivation for compilation without sha2 in services
-    // Wire in sha2 in the next pass when services/Cargo.toml is updated
-    let mut result = [0u8; 32];
-    for i in 0..32 {
-        result[i] = first[i]
-            ^ second[i]
-            ^ ((session_id >> (i % 8 * 8)) as u8)
-            ^ 0x76; // 'v' for voip domain separation
+    let mut hasher = Sha256::new();
+    if key_a <= key_b {
+        hasher.update(key_a);
+        hasher.update(key_b);
+    } else {
+        hasher.update(key_b);
+        hasher.update(key_a);
     }
-    result
+    hasher.update(session_id.to_le_bytes());
+    hasher.update(b"theos-voip-v1");
+    hasher.finalize().into()
 }
 
 // -- CallStats ----------------------------------------------------------------
@@ -430,15 +426,18 @@ impl VoipSession {
         let nonce_counter = self.send_counter;
         self.send_counter += 1;
 
-        // Production: use chacha20poly1305 crate from theos-core
-        // Stub: XOR with session key for structure (not secure -- placeholder)
-        // Wire real encryption when services depends on theos-core crypto
-        let mut payload = opus_frame.to_vec();
-        for (i, byte) in payload.iter_mut().enumerate() {
-            *byte ^= self.session_key[i % 32];
-        }
-        // Add 16-byte auth tag placeholder
-        payload.extend_from_slice(&self.session_key[..16]);
+        // Real ChaCha20-Poly1305 encryption
+        // Nonce: 8-byte counter (LE) || 4-byte zero pad = 12 bytes
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[..8].copy_from_slice(&nonce_counter.to_le_bytes());
+        let key    = Key::from_slice(&self.session_key);
+        let cipher = ChaCha20Poly1305::new(key);
+        let nonce  = Nonce::from_slice(&nonce_bytes);
+        let payload = cipher.encrypt(nonce, opus_frame)
+            .unwrap_or_else(|_| {
+                println!("[voip] encrypt failed for counter:{}", nonce_counter);
+                vec![]
+            });
 
         let rtp_timestamp = (sequence * (OPUS_FRAME_MS * 48)) as u32; // 48kHz samples
 
@@ -465,14 +464,20 @@ impl VoipSession {
             }
             self.mark_seen(*nonce_counter);
 
-            // Production: ChaCha20-Poly1305 decrypt + verify tag
-            // Stub: reverse the XOR, strip auth tag
-            if payload.len() < 16 { return None; }
-            let ciphertext = &payload[..payload.len() - 16];
-            let mut plaintext = ciphertext.to_vec();
-            for (i, byte) in plaintext.iter_mut().enumerate() {
-                *byte ^= self.session_key[i % 32];
-            }
+            // Real ChaCha20-Poly1305 decryption + auth tag verification
+            if payload.is_empty() { return None; }
+            let mut nonce_bytes = [0u8; 12];
+            nonce_bytes[..8].copy_from_slice(&nonce_counter.to_le_bytes());
+            let key    = Key::from_slice(&self.session_key);
+            let cipher = ChaCha20Poly1305::new(key);
+            let nonce  = Nonce::from_slice(&nonce_bytes);
+            let plaintext = match cipher.decrypt(nonce, payload.as_ref()) {
+                Ok(pt) => pt,
+                Err(_) => {
+                    println!("[voip] decrypt auth failed counter:{} -- dropping frame", nonce_counter);
+                    return None;
+                }
+            };
 
             self.stats.frames_received += 1;
             self.stats.bytes_received  += payload.len() as u64;

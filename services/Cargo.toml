@@ -17,6 +17,9 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 md5 = "0.7"
+theos-core = { path = "../theos-core" }
+chacha20poly1305 = "0.10"
+sha2 = "0.10"
 axum = "0.8.8"
 tower-http = { version = "0.6.8", features = ["fs"] }
 tokio-tungstenite = "0.28.0"
