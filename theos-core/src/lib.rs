@@ -10,3 +10,4 @@ pub mod web_proxy;
 pub mod message_store;
 pub mod stt_engine;
 pub mod push_notification;
+pub mod ntp;
