@@ -3,9 +3,14 @@ name = "theos-core"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+persistence = ["dep:rusqlite"]
+
 [dependencies]
 chacha20poly1305 = "0.10"
 ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 sha2 = "0.10"
 hmac = "0.12"
 rand = "0.8"
+rusqlite = { version = "0.39", features = ["bundled"], optional = true }

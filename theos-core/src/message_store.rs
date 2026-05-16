@@ -615,3 +615,357 @@ mod tests {
         assert!(DEFAULT_DB_PATH.ends_with(".db"));
     }
 }
+
+// -- PersistentMessageStore ---------------------------------------------------
+//
+// SQLite-backed message store for production use on device.
+// Uses rusqlite with bundled SQLite (no system SQLite needed).
+//
+// Schema:
+//   conversations(contact_key_hex TEXT PK, last_message_at INT,
+//                 unread_count INT, retention_days INT, created_at INT)
+//   messages(id INT PK, conversation_id TEXT, from_me INT,
+//            content_enc BLOB, timestamp INT, delivery INT, nonce_counter INT)
+//
+// All content_enc blobs are ChaCha20-Poly1305 encrypted before insert.
+// Decrypted on read. SQLite file is plaintext metadata only.
+
+#[cfg(feature = "persistence")]
+pub mod persistent {
+    use super::*;
+    use rusqlite::{Connection, params};
+
+    pub struct PersistentMessageStore {
+        conn:         Connection,
+        encryptor:    MessageEncryptor,
+        send_counter: u64,
+    }
+
+    impl PersistentMessageStore {
+        /// Open or create the message database at the given path.
+        /// Use ":memory:" for tests.
+        pub fn open(path: &str, owner_key: &[u8; 32]) -> Result<Self, String> {
+            let conn = Connection::open(path)
+                .map_err(|e| format!("db open failed: {}", e))?;
+
+            let store = Self {
+                conn,
+                encryptor:    MessageEncryptor::new(owner_key),
+                send_counter: 0,
+            };
+
+            store.init_schema()?;
+            Ok(store)
+        }
+
+        fn init_schema(&self) -> Result<(), String> {
+            self.conn.execute_batch("
+                CREATE TABLE IF NOT EXISTS conversations (
+                    contact_key_hex TEXT PRIMARY KEY,
+                    last_message_at INTEGER NOT NULL,
+                    unread_count    INTEGER NOT NULL DEFAULT 0,
+                    retention_days  INTEGER NOT NULL DEFAULT 90,
+                    created_at      INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS messages (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT    NOT NULL,
+                    from_me         INTEGER NOT NULL,
+                    content_enc     BLOB    NOT NULL,
+                    timestamp       INTEGER NOT NULL,
+                    delivery        INTEGER NOT NULL DEFAULT 0,
+                    nonce_counter   INTEGER NOT NULL,
+                    FOREIGN KEY (conversation_id)
+                        REFERENCES conversations(contact_key_hex)
+                );
+                CREATE INDEX IF NOT EXISTS idx_messages_conv
+                    ON messages(conversation_id, timestamp);
+            ").map_err(|e| format!("schema init failed: {}", e))
+        }
+
+        /// Store an encrypted message. Returns assigned message ID.
+        pub fn store_message(
+            &mut self,
+            conversation_id: &str,
+            from_me:         bool,
+            plaintext:       &[u8],
+        ) -> Result<u64, String> {
+            let counter   = self.send_counter;
+            self.send_counter += 1;
+            let encrypted = self.encryptor.encrypt(plaintext, counter);
+            let now       = now_secs();
+            let from_me_i = if from_me { 1i64 } else { 0i64 };
+
+            // Upsert conversation
+            self.conn.execute(
+                "INSERT INTO conversations(contact_key_hex, last_message_at, unread_count, created_at)
+                 VALUES(?1, ?2, ?3, ?4)
+                 ON CONFLICT(contact_key_hex) DO UPDATE SET
+                     last_message_at = ?2,
+                     unread_count = unread_count + ?3",
+                params![
+                    conversation_id,
+                    now as i64,
+                    if from_me { 0i64 } else { 1i64 },
+                    now as i64,
+                ],
+            ).map_err(|e| format!("upsert conv failed: {}", e))?;
+
+            // Insert message
+            self.conn.execute(
+                "INSERT INTO messages(conversation_id, from_me, content_enc, timestamp, delivery, nonce_counter)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    conversation_id,
+                    from_me_i,
+                    encrypted,
+                    now as i64,
+                    0i64, // Sending
+                    counter as i64,
+                ],
+            ).map_err(|e| format!("insert message failed: {}", e))?;
+
+            Ok(self.conn.last_insert_rowid() as u64)
+        }
+
+        /// Retrieve and decrypt messages for a conversation (newest last).
+        pub fn messages_for(
+            &self,
+            conversation_id: &str,
+            limit:           usize,
+        ) -> Result<Vec<(u64, bool, Vec<u8>, u64, StoredDelivery)>, String> {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, from_me, content_enc, timestamp, delivery, nonce_counter
+                 FROM messages
+                 WHERE conversation_id = ?1
+                 ORDER BY timestamp ASC, id ASC
+                 LIMIT ?2"
+            ).map_err(|e| format!("prepare failed: {}", e))?;
+
+            let rows = stmt.query_map(
+                params![conversation_id, limit as i64],
+                |row| Ok((
+                    row.get::<_, i64>(0)? as u64,
+                    row.get::<_, i64>(1)? != 0,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)? as u64,
+                    StoredDelivery::from_u8(row.get::<_, i64>(4)? as u8),
+                    row.get::<_, i64>(5)? as u64,
+                )),
+            ).map_err(|e| format!("query failed: {}", e))?;
+
+            let mut result = Vec::new();
+            for row in rows {
+                let (id, from_me, enc, ts, delivery, counter) =
+                    row.map_err(|e| format!("row error: {}", e))?;
+                if let Some(pt) = self.encryptor.decrypt(&enc, counter) {
+                    result.push((id, from_me, pt, ts, delivery));
+                }
+            }
+            Ok(result)
+        }
+
+        /// Update delivery state for a message.
+        pub fn update_delivery(&self, message_id: u64, delivery: StoredDelivery) -> Result<bool, String> {
+            let rows = self.conn.execute(
+                "UPDATE messages SET delivery = ?1 WHERE id = ?2",
+                params![delivery.as_u8() as i64, message_id as i64],
+            ).map_err(|e| format!("update failed: {}", e))?;
+            Ok(rows > 0)
+        }
+
+        /// Mark all delivered messages in a conversation as read.
+        pub fn mark_read(&self, conversation_id: &str) -> Result<u32, String> {
+            let rows = self.conn.execute(
+                "UPDATE messages SET delivery = ?1
+                 WHERE conversation_id = ?2 AND from_me = 0 AND delivery = ?3",
+                params![
+                    StoredDelivery::Read.as_u8() as i64,
+                    conversation_id,
+                    StoredDelivery::Delivered.as_u8() as i64,
+                ],
+            ).map_err(|e| format!("mark_read failed: {}", e))?;
+
+            self.conn.execute(
+                "UPDATE conversations SET unread_count = 0 WHERE contact_key_hex = ?1",
+                params![conversation_id],
+            ).map_err(|e| format!("reset unread failed: {}", e))?;
+
+            Ok(rows as u32)
+        }
+
+        /// Delete messages older than retention period.
+        pub fn gc(&self) -> Result<usize, String> {
+            let cutoff = now_secs().saturating_sub(DEFAULT_RETENTION_DAYS * 86400) as i64;
+            let rows = self.conn.execute(
+                "DELETE FROM messages WHERE timestamp < ?1",
+                params![cutoff],
+            ).map_err(|e| format!("gc failed: {}", e))?;
+            Ok(rows)
+        }
+
+        /// Delete all messages for a conversation.
+        pub fn delete_conversation(&self, conversation_id: &str) -> Result<usize, String> {
+            let rows = self.conn.execute(
+                "DELETE FROM messages WHERE conversation_id = ?1",
+                params![conversation_id],
+            ).map_err(|e| format!("delete failed: {}", e))?;
+            self.conn.execute(
+                "DELETE FROM conversations WHERE contact_key_hex = ?1",
+                params![conversation_id],
+            ).map_err(|e| format!("delete conv failed: {}", e))?;
+            Ok(rows)
+        }
+
+        pub fn message_count(&self) -> usize {
+            self.conn.query_row(
+                "SELECT COUNT(*) FROM messages", [], |r| r.get::<_, i64>(0)
+            ).unwrap_or(0) as usize
+        }
+
+        pub fn conversation_count(&self) -> usize {
+            self.conn.query_row(
+                "SELECT COUNT(*) FROM conversations", [], |r| r.get::<_, i64>(0)
+            ).unwrap_or(0) as usize
+        }
+
+        pub fn total_unread(&self) -> u32 {
+            self.conn.query_row(
+                "SELECT COALESCE(SUM(unread_count), 0) FROM conversations",
+                [], |r| r.get::<_, i64>(0)
+            ).unwrap_or(0) as u32
+        }
+    }
+
+    // -- Persistence tests ----------------------------------------------------
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn owner() -> [u8; 32] { [0xAAu8; 32] }
+        fn mem_store() -> PersistentMessageStore {
+            PersistentMessageStore::open(":memory:", &owner()).unwrap()
+        }
+        const CONV: &str = "aabbccdd";
+        const CONV2: &str = "eeff0011";
+
+        #[test]
+        fn test_persistent_store_opens() {
+            assert!(PersistentMessageStore::open(":memory:", &owner()).is_ok());
+        }
+
+        #[test]
+        fn test_persistent_store_message() {
+            let mut s = mem_store();
+            let id = s.store_message(CONV, true, b"Hello Sarah").unwrap();
+            assert!(id > 0);
+            assert_eq!(s.message_count(), 1);
+        }
+
+        #[test]
+        fn test_persistent_retrieve_decrypt() {
+            let mut s = mem_store();
+            s.store_message(CONV, true, b"Hey!").unwrap();
+            let msgs = s.messages_for(CONV, 10).unwrap();
+            assert_eq!(msgs.len(), 1);
+            assert_eq!(msgs[0].2, b"Hey!");
+            assert!(msgs[0].1); // from_me
+        }
+
+        #[test]
+        fn test_persistent_multiple_messages() {
+            let mut s = mem_store();
+            s.store_message(CONV, true,  b"first").unwrap();
+            s.store_message(CONV, false, b"second").unwrap();
+            s.store_message(CONV, true,  b"third").unwrap();
+            let msgs = s.messages_for(CONV, 10).unwrap();
+            assert_eq!(msgs.len(), 3);
+            assert_eq!(msgs[0].2, b"first");
+            assert_eq!(msgs[2].2, b"third");
+        }
+
+        #[test]
+        fn test_persistent_separate_conversations() {
+            let mut s = mem_store();
+            s.store_message(CONV,  true, b"to sarah").unwrap();
+            s.store_message(CONV2, true, b"to marcus").unwrap();
+            assert_eq!(s.messages_for(CONV,  10).unwrap().len(), 1);
+            assert_eq!(s.messages_for(CONV2, 10).unwrap().len(), 1);
+            assert_eq!(s.conversation_count(), 2);
+        }
+
+        #[test]
+        fn test_persistent_update_delivery() {
+            let mut s = mem_store();
+            let id = s.store_message(CONV, true, b"hello").unwrap();
+            assert!(s.update_delivery(id, StoredDelivery::Sent).unwrap());
+            let msgs = s.messages_for(CONV, 10).unwrap();
+            assert_eq!(msgs[0].4, StoredDelivery::Sent);
+        }
+
+        #[test]
+        fn test_persistent_mark_read() {
+            let mut s = mem_store();
+            let id = s.store_message(CONV, false, b"incoming").unwrap();
+            s.update_delivery(id, StoredDelivery::Delivered).unwrap();
+            s.mark_read(CONV).unwrap();
+            let msgs = s.messages_for(CONV, 10).unwrap();
+            assert_eq!(msgs[0].4, StoredDelivery::Read);
+        }
+
+        #[test]
+        fn test_persistent_delete_conversation() {
+            let mut s = mem_store();
+            s.store_message(CONV,  true, b"msg1").unwrap();
+            s.store_message(CONV,  true, b"msg2").unwrap();
+            s.store_message(CONV2, true, b"other").unwrap();
+            let deleted = s.delete_conversation(CONV).unwrap();
+            assert_eq!(deleted, 2);
+            assert_eq!(s.message_count(), 1);
+        }
+
+        #[test]
+        fn test_persistent_gc() {
+            let s = mem_store();
+            // GC on empty store should succeed
+            let deleted = s.gc().unwrap();
+            assert_eq!(deleted, 0);
+        }
+
+        #[test]
+        fn test_persistent_total_unread() {
+            let mut s = mem_store();
+            s.store_message(CONV,  false, b"1").unwrap();
+            s.store_message(CONV2, false, b"2").unwrap();
+            assert_eq!(s.total_unread(), 2);
+        }
+
+        #[test]
+        fn test_persistent_limit() {
+            let mut s = mem_store();
+            for i in 0..10u8 {
+                s.store_message(CONV, true, &[i]).unwrap();
+            }
+            let msgs = s.messages_for(CONV, 3).unwrap();
+            assert_eq!(msgs.len(), 3);
+        }
+
+        #[test]
+        fn test_persistent_encryption_roundtrip() {
+            let mut s = mem_store();
+            let secret = b"super secret message content";
+            s.store_message(CONV, true, secret).unwrap();
+            let msgs = s.messages_for(CONV, 1).unwrap();
+            assert_eq!(msgs[0].2, secret);
+        }
+
+        #[test]
+        fn test_persistent_ids_autoincrement() {
+            let mut s = mem_store();
+            let id1 = s.store_message(CONV, true, b"a").unwrap();
+            let id2 = s.store_message(CONV, true, b"b").unwrap();
+            assert!(id1 < id2);
+        }
+    }
+}
