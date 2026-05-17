@@ -1,0 +1,9 @@
+[build]
+target = "aarch64-unknown-none"
+
+[target.aarch64-unknown-none]
+linker = "aarch64-linux-gnu-ld"
+rustflags = [
+    "-C", "link-arg=-T/mnt/c/dev/theOS/theos-kernel/linker.ld",
+    "-C", "panic=abort",
+]

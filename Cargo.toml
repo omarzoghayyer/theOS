@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "theos-kernel",
     "tools/bootstrap",
   "services",
   "services/cap-broker",
@@ -8,3 +9,12 @@ members = [
   "theos-compositor",
   "theos-core"
 ]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true
+codegen-units = 1
