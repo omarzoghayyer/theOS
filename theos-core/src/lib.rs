@@ -15,3 +15,4 @@ pub mod ntp;
 
 
 pub mod display_backend;
+pub mod ipc_protocol;
