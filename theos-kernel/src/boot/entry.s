@@ -15,18 +15,9 @@ _start:
 
 .section ".text._start", "ax"
 
-/* Minimal vector table at 0x200 offset */
 .balign 2048
 vector_table:
-    /* EL1t synchronous */
     b       exception_handler
-    .balign 128
-    b       exception_handler
-    .balign 128
-    b       exception_handler
-    .balign 128
-    b       exception_handler
-    /* EL1h synchronous */
     .balign 128
     b       exception_handler
     .balign 128
@@ -35,7 +26,6 @@ vector_table:
     b       exception_handler
     .balign 128
     b       exception_handler
-    /* EL0 64-bit */
     .balign 128
     b       exception_handler
     .balign 128
@@ -44,7 +34,12 @@ vector_table:
     b       exception_handler
     .balign 128
     b       exception_handler
-    /* EL0 32-bit */
+    .balign 128
+    b       exception_handler
+    .balign 128
+    b       exception_handler
+    .balign 128
+    b       exception_handler
     .balign 128
     b       exception_handler
     .balign 128
@@ -55,19 +50,18 @@ vector_table:
     b       exception_handler
 
 exception_handler:
-    /* Spin forever on any exception */
     wfe
     b       exception_handler
 
 kernel_entry:
-    /* Install vector table */
+    /* CRITICAL: save DTB pointer from x0 BEFORE touching x0 */
+    mov     x20, x0
+
+    /* Install vector table -- uses x0 safely now */
     adrp    x0, vector_table
     add     x0, x0, :lo12:vector_table
     msr     vbar_el1, x0
     isb
-
-    /* Save DTB pointer */
-    mov     x20, x1
 
     /* Set up stack */
     adrp    x5, THEOS_STACK_TOP
@@ -85,6 +79,7 @@ bss_zero_loop:
     str     xzr, [x6], #8
     b       bss_zero_loop
 bss_zero_done:
+    /* Pass DTB address to kernel_main */
     mov     x0, x20
     bl      kernel_main
 hang:

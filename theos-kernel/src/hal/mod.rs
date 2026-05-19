@@ -11,3 +11,4 @@
 // No other module accesses MMIO registers directly.
 
 pub mod uart;
+pub mod dtb;

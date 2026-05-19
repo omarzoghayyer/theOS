@@ -1,28 +1,40 @@
-// memory/mod.rs -- Physical Memory Manager
-//
-// Manages physical RAM on the Pixel 7 Pro.
-//
-// Pixel 7 Pro memory layout (from DTB):
-//   0x80000000 - 0xFFFFFFFF  First RAM region (2GB)
-//   0x880000000+             Extended RAM (additional GB)
-//
-// Phase 1 (current): stub -- logs init, does nothing
-// Phase 2: parse DTB for actual memory regions
-// Phase 3: buddy allocator for physical pages
-// Phase 4: virtual memory + page tables
-//
-// Security:
-//   All memory management is in this module.
-//   No other module allocates physical memory directly.
+pub fn init(_dtb_paddr: u64) {
+    // QEMU virt places DTB at 0x0
+    let dtb_addr: u64 = 0x00000000;
 
-/// Initialize the memory manager.
-/// dtb_paddr: physical address of device tree blob.
-pub fn init(dtb_paddr: u64) {
-    // Phase 1 stub: acknowledge DTB address, do nothing yet
-    // Phase 2: parse DTB memory nodes to find RAM regions
-    // Phase 3: initialize buddy allocator over RAM regions
-    let _ = dtb_paddr;
-    crate::println!("[memory] stub initialized (Phase 1)");
-    crate::println!("[memory] DTB parsing: Phase 2");
-    crate::println!("[memory] buddy allocator: Phase 3");
+    crate::println!("[memory] parsing DTB at {:#018x}", dtb_addr);
+
+    let info = unsafe { crate::hal::dtb::parse(dtb_addr) };
+
+    match info {
+        Ok(dtb) => {
+            crate::println!("[memory] DTB ok");
+            crate::println!("[memory] RAM regions: {}", dtb.memory_region_count);
+            let mut i = 0;
+            while i < dtb.memory_region_count {
+                let r = dtb.memory_regions[i];
+                crate::println!(
+                    "[memory]   [{}: base={:#018x} size={:#010x} ({} MB)]",
+                    i, r.base, r.size, r.size / (1024 * 1024)
+                );
+                i += 1;
+            }
+            crate::println!("[memory] total RAM: {} MB", dtb.total_ram_bytes() / (1024 * 1024));
+            crate::println!("[memory] UART:      {:#018x}", dtb.uart_base);
+            crate::println!("[memory] GIC dist:  {:#018x}", dtb.gic_dist_base);
+            crate::println!("[memory] GIC cpu:   {:#018x}", dtb.gic_cpu_base);
+        }
+        Err(crate::hal::dtb::DtbError::NullAddress) => {
+            crate::println!("[memory] DTB null");
+        }
+        Err(crate::hal::dtb::DtbError::BadMagic(m)) => {
+            crate::println!("[memory] DTB bad magic: {:#010x}", m);
+        }
+        Err(crate::hal::dtb::DtbError::BadVersion(v)) => {
+            crate::println!("[memory] DTB bad version: {}", v);
+        }
+        Err(crate::hal::dtb::DtbError::OutOfBounds) => {
+            crate::println!("[memory] DTB out of bounds");
+        }
+    }
 }
