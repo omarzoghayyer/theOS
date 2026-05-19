@@ -205,14 +205,14 @@ pub unsafe fn parse(dtb_paddr: u64) -> Result<DtbInfo, DtbError> {
 
                 depth += 1;
 
-                if depth == 1 {
+                if depth == 2 {
                     in_memory_node = bytes_starts_with(node_name, b"memory");
                     in_uart_node   = bytes_starts_with(node_name, b"pl011")
                                   || bytes_starts_with(node_name, b"uart");
                     in_gic_node    = bytes_starts_with(node_name, b"intc")
                                   || bytes_starts_with(node_name, b"interrupt-controller")
                                   || bytes_starts_with(node_name, b"gic");
-                } else if depth > 1 {
+                } else if depth > 2 {
                     in_memory_node = false;
                     in_uart_node   = false;
                     in_gic_node    = false;
