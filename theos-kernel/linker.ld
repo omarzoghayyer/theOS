@@ -3,6 +3,7 @@ ENTRY(_start)
 SECTIONS
 {
     . = 0x40000000;
+    THEOS_KERNEL_START = .;
 
     .head.text : { KEEP(*(.head.text)) }
 
