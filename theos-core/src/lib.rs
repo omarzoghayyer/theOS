@@ -17,3 +17,5 @@ pub mod ntp;
 pub mod display_backend;
 pub mod ipc_protocol;
 pub mod buddy_allocator;
+pub mod kernel_ipc_tests;
+pub mod kernel_scheduler_tests;
