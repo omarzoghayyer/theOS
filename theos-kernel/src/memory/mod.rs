@@ -44,6 +44,12 @@ pub fn init(_dtb_paddr: u64) {
                 dtb.uart_base, dtb.gic_dist_base, dtb.gic_cpu_base
             );
 
+            // Initialize GIC and ARM generic timer
+            if dtb.gic_dist_base != 0 && dtb.gic_cpu_base != 0 {
+                crate::hal::gic::init(dtb.gic_dist_base, dtb.gic_cpu_base);
+                crate::hal::gic::install_exception_vector();
+            }
+
             if dtb.memory_region_count > 0 {
                 let region = dtb.memory_regions[0];
                 let kernel_start = &raw const THEOS_KERNEL_START as u64;

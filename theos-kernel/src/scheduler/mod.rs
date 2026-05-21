@@ -45,7 +45,7 @@
 // Phase 3: satellite-aware scheduling hints from net_daemon.
 // Phase 4: multi-core load balancing (Pixel 7 Pro: 4+4 big.LITTLE cores).
 
-use crate::process::{Pid, Priority, ProcessState};
+use crate::process::{Pid, Priority};
 
 // -- Quantum sizes in microseconds --------------------------------------------
 const QUANTUM_US_P0: u32 =     2_000; // 2ms  -- audio period
