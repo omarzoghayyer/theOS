@@ -46,8 +46,8 @@ pub fn init(_dtb_paddr: u64) {
 
             if dtb.memory_region_count > 0 {
                 let region = dtb.memory_regions[0];
-                let kernel_start = unsafe { &raw const THEOS_KERNEL_START as u64 };
-                let kernel_end   = unsafe { &raw const THEOS_KERNEL_END as u64 };
+                let kernel_start = &raw const THEOS_KERNEL_START as u64;
+                let kernel_end   = &raw const THEOS_KERNEL_END as u64;
 
                 crate::println!("[memory] kernel: {:#x}..{:#x}", kernel_start, kernel_end);
 
