@@ -19,7 +19,6 @@ pub mod colors {
     pub const TEXT_PRIMARY:   [f32; 4] = [1.00, 1.00, 1.00, 1.0]; // white
     pub const TEXT_SECONDARY: [f32; 4] = [0.60, 0.60, 0.70, 1.0]; // gray
     pub const DIVIDER:        [f32; 4] = [0.15, 0.15, 0.20, 1.0]; // subtle line
-    pub const DIALER_KEY:     [f32; 4] = [0.12, 0.12, 0.18, 1.0]; // key background
     pub const CALL_GREEN:     [f32; 4] = [0.10, 0.85, 0.40, 1.0]; // call button
     pub const HANGUP_RED:     [f32; 4] = [0.90, 0.15, 0.15, 1.0]; // hangup button
 }
@@ -41,7 +40,7 @@ pub trait Surface {
 pub enum TouchState { Down, Up, Move }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ActiveSurface { Lock, Home, Dialer, Assistant, Settings, AiShell, Messenger, WebProxy }
+pub enum ActiveSurface { Lock, Home, Call, Assistant, Settings, AiShell, Messenger, WebProxy }
 
 // ── Render helpers ──
 // These wrap the smithay GLES frame to make drawing easier
@@ -212,47 +211,6 @@ impl RenderPipeline {
         }
     }
 
-    /// Draw the dialer keypad
-    pub fn draw_dialer_keypad(&self, frame: &mut GlesFrame, number: &str) {
-        // Number display area
-        let display_y = STATUS_H + 200;
-        let display_h = 120;
-        draw_rect(frame, 0, display_y, self.width, display_h, colors::BACKGROUND);
-
-        // Keypad grid — 3x4
-        let key_cols = 3;
-        let key_rows = 4;
-        let margin = 60;
-        let spacing = 20;
-        let key_w = (self.width - margin*2 - spacing*(key_cols-1)) / key_cols;
-        let key_h = 140;
-        let keypad_top = display_y + display_h + 60;
-
-        let keys = [
-            "1","2","3",
-            "4","5","6",
-            "7","8","9",
-            "*","0","#",
-        ];
-
-        for (i, key) in keys.iter().enumerate() {
-            let col = (i % key_cols as usize) as i32;
-            let row = (i / key_cols as usize) as i32;
-            let x = margin + col * (key_w + spacing);
-            let y = keypad_top + row * (key_h + spacing);
-
-            draw_rounded_rect(frame, x, y, key_w, key_h, key_h/2, colors::DIALER_KEY);
-            println!("[render] dialer key: {} at ({},{})", key, x, y);
-        }
-
-        // Call button
-        let btn_r = 80;
-        let btn_cx = self.width / 2;
-        let btn_cy = keypad_top + key_rows * (key_h + spacing) + 60;
-        draw_circle(frame, btn_cx, btn_cy, btn_r, colors::CALL_GREEN);
-
-        println!("[render] dialer — number: '{}'", number);
-    }
 }
 
 // -- Screen constants for OnePlus 6 ------------------------------------------

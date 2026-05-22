@@ -5,7 +5,6 @@
 #[cfg(feature = "compositor")] mod render;
 #[cfg(feature = "compositor")] mod ipc;
 #[cfg(feature = "compositor")] mod shell;
-#[cfg(feature = "compositor")] mod dialer;
 #[cfg(feature = "compositor")] mod assistant;
 #[cfg(feature = "compositor")] mod settings;
 #[cfg(feature = "compositor")] mod keystore;
@@ -21,7 +20,6 @@ mod hal;
 #[cfg(feature = "compositor")]
 use render::{RenderPipeline, ActiveSurface, Surface, TouchState, TransitionState, OrbState};
 #[cfg(feature = "compositor")] use shell::Shell;
-#[cfg(feature = "compositor")] use dialer::Dialer;
 #[cfg(feature = "compositor")] use assistant::Assistant;
 #[cfg(feature = "compositor")] use ai_shell::{AiShell, AiShellNav, AiShellState, InputMode};
 #[cfg(feature = "compositor")] use input::{InputManager, InputEvent, Gesture, HardwareButton};
@@ -63,7 +61,6 @@ fn run_compositor() {
     // -- Initialize surfaces --------------------------------------------------
     let mut pipeline  = RenderPipeline::new(1080, 2280);
     let mut shell     = Shell::new();
-    let mut dialer    = Dialer::new();
     let mut assistant = Assistant::new();
     let mut ai_shell  = AiShell::new();
     let mut messenger = MessengerView::new();
@@ -303,9 +300,6 @@ fn run_compositor() {
                 ActiveSurface::Messenger => {
                     println!("[compositor] frame:{} messenger", frame);
                 }
-                ActiveSurface::Dialer => {
-                    println!("[compositor] frame:{} dialer", frame);
-                }
                 _ => {
                     println!("[compositor] frame:{} {:?}", frame, pipeline.active_surface);
                 }
@@ -334,10 +328,10 @@ fn handle_nav(
     t:          f64,
 ) {
     match nav {
-        AiShellNav::GoToDialer { ref contact } => {
-            println!("[compositor] voice -> dialer: {}", contact);
+        AiShellNav::GoToCall { ref contact } => {
+            println!("[compositor] voice -> call: {}", contact);
             *transition = Some(TransitionState::new(
-                ActiveSurface::AiShell, ActiveSurface::Dialer, t
+                ActiveSurface::AiShell, ActiveSurface::Call, t
             ));
         }
         AiShellNav::GoToMessages => {

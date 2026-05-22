@@ -101,7 +101,7 @@ impl Intent {
 
     pub fn navigates_to(&self) -> Option<&'static str> {
         match self {
-            Intent::Call { .. }  => Some("dialer"),
+            Intent::Call { .. }  => Some("call"),
             Intent::ShowMessages => Some("messages"),
             Intent::ShowSettings => Some("settings"),
             _                    => None,
@@ -153,7 +153,7 @@ pub enum InputMode {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AiShellNav {
     None,
-    GoToDialer { contact: String },
+    GoToCall { contact: String },
     GoToMessages,
     GoToSettings,
     GoToTraditionalHome,
@@ -218,12 +218,12 @@ impl AiShell {
         self.push_ai(reply);
 
         match nav {
-            Some("dialer") => {
+            Some("call") => {
                 let contact = match &intent {
                     Intent::Call { contact } => contact.clone(),
                     _ => String::new(),
                 };
-                AiShellNav::GoToDialer { contact }
+                AiShellNav::GoToCall { contact }
             }
             Some("messages") => AiShellNav::GoToMessages,
             Some("settings") => AiShellNav::GoToSettings,
@@ -378,8 +378,8 @@ mod tests {
     }
 
     #[test]
-    fn test_call_navigates_to_dialer() {
-        assert_eq!(Intent::Call { contact: "sarah".to_string() }.navigates_to(), Some("dialer"));
+    fn test_call_navigates_to_call() {
+        assert_eq!(Intent::Call { contact: "sarah".to_string() }.navigates_to(), Some("call"));
     }
 
     #[test]
@@ -426,12 +426,12 @@ mod tests {
     }
 
     #[test]
-    fn test_submit_call_returns_dialer_nav() {
+    fn test_submit_call_returns_call_nav() {
         let mut shell    = AiShell::new();
         shell.input_buf  = "call sarah".to_string();
         shell.input_mode = InputMode::Typing;
         let nav = shell.submit_input();
-        assert_eq!(nav, AiShellNav::GoToDialer { contact: "sarah".to_string() });
+        assert_eq!(nav, AiShellNav::GoToCall { contact: "sarah".to_string() });
     }
 
     #[test]
