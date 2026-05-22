@@ -42,6 +42,36 @@ pub enum TouchState { Down, Up, Move }
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ActiveSurface { Lock, Home, Call, Assistant, Settings, AiShell, Messenger, WebProxy }
 
+/// Visual state of the AI orb -- drives animation and color.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OrbState {
+    /// Idle / sleeping -- slow ambient pulse.
+    Passive,
+    /// Actively listening to the user -- bright, reactive pulse.
+    Listening,
+    /// Processing a command -- spinning / thinking animation.
+    Processing,
+    /// Speaking a response -- waveform-style animation.
+    Responding,
+}
+
+impl OrbState {
+    /// Whether the orb should render in an active (bright) state.
+    pub fn is_active(&self) -> bool {
+        !matches!(self, OrbState::Passive)
+    }
+
+    /// Label for debug output.
+    pub fn label(&self) -> &'static str {
+        match self {
+            OrbState::Passive    => "passive",
+            OrbState::Listening  => "listening",
+            OrbState::Processing => "processing",
+            OrbState::Responding => "responding",
+        }
+    }
+}
+
 // ── Render helpers ──
 // These wrap the smithay GLES frame to make drawing easier
 

@@ -272,6 +272,28 @@ impl PowerManager {
     pub fn wake_lock_count(&self) -> usize { self.wake_locks.len() }
 
     /// Force immediate sleep (e.g. power button press).
+    /// Convenience: is the screen currently off (sleep or deep sleep)?
+    pub fn is_sleeping(&self) -> bool {
+        !self.state.is_screen_on()
+    }
+
+    /// Convenience: wake the device from sleep (user pressed power / interacted).
+    /// Maps to on_activity() which transitions toward Active.
+    pub fn wake(&mut self) {
+        self.on_activity();
+    }
+
+    /// Convenience: put the device to sleep (user pressed power).
+    pub fn sleep(&mut self) {
+        self.force_sleep();
+    }
+
+    /// Convenience: register a user interaction (touch, button).
+    /// Resets the idle timer and keeps the screen awake.
+    pub fn on_interaction(&mut self) {
+        self.on_activity();
+    }
+
     pub fn force_sleep(&mut self) {
         println!("[power] force sleep");
         self.sleep_count += 1;

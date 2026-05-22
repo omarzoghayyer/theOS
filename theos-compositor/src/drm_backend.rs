@@ -119,7 +119,7 @@ mod hw {
     };
     use drm::Device as DrmDevice;
     use std::fs::OpenOptions;
-    use std::os::unix::io::{AsRawFd, RawFd};
+    use std::os::unix::io::{AsRawFd, AsFd, RawFd};
 
     pub struct HwBackend {
         pub mode:      DisplayMode,
@@ -164,11 +164,12 @@ mod hw {
 
         for enc_h in conn.encoders() {
             if let Ok(enc) = card.get_encoder(*enc_h) {
-                for crtc_h in res.crtcs() {
-                    if enc.possible_crtcs().contains(*crtc_h) {
-                        println!("[drm] found CRTC");
-                        return Ok(*crtc_h);
-                    }
+                // drm 0.14: possible_crtcs() returns a CrtcListFilter bitmask.
+                // filter_crtcs() resolves it against the resource crtc list.
+                let compatible = res.filter_crtcs(enc.possible_crtcs());
+                if let Some(crtc_h) = compatible.first() {
+                    println!("[drm] found CRTC");
+                    return Ok(*crtc_h);
                 }
             }
         }
@@ -225,6 +226,9 @@ impl DrmBackend {
             struct Card(std::fs::File);
             impl std::os::unix::io::AsRawFd for Card {
                 fn as_raw_fd(&self) -> std::os::unix::io::RawFd { self.0.as_raw_fd() }
+            }
+            impl std::os::unix::io::AsFd for Card {
+                fn as_fd(&self) -> std::os::unix::io::BorrowedFd<'_> { self.0.as_fd() }
             }
             impl drm::Device for Card {}
             impl drm::control::Device for Card {}
