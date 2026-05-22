@@ -25,6 +25,7 @@ use render::{RenderPipeline, ActiveSurface, Surface, TouchState, TransitionState
 #[cfg(feature = "compositor")] use ai_shell::{AiShell, AiShellNav, AiShellState, InputMode};
 #[cfg(feature = "compositor")] use input::{InputManager, InputEvent, Gesture, HardwareButton};
 #[cfg(feature = "compositor")] use messenger_ui::{MessengerView, MessengerScreen, ConvPreview, BubbleData, DeliveryStateUi};
+#[cfg(feature = "compositor")] use call_ui::CallSurface;
 
 // theos-core voice + power
 use theos_core::wake_word::{WakeEngine, WakeState, strip_wake_word, contains_wake_word};
@@ -65,6 +66,7 @@ fn run_compositor() {
     let mut assistant = Assistant::new();
     let mut ai_shell  = AiShell::new();
     let mut messenger = MessengerView::new();
+    let mut call: Option<CallSurface> = None;
 
     let demo_convs = vec![
         ConvPreview {
@@ -187,7 +189,7 @@ fn run_compositor() {
                         ai_shell.input_mode = InputMode::Typing;
                         let nav = ai_shell.submit_input();
                         show_text_input = false;
-                        handle_nav(nav, &mut transition, &mut messenger, t);
+                        handle_nav(nav, &mut transition, &mut messenger, &mut call, t);
                     }
                 }
                 InputEvent::KeyEscape => {
@@ -244,7 +246,7 @@ fn run_compositor() {
                     pipeline.navigate(ActiveSurface::AiShell);
                 }
 
-                handle_nav(nav, &mut transition, &mut messenger, t);
+                handle_nav(nav, &mut transition, &mut messenger, &mut call, t);
             }
             wake.on_response_complete();
         }
@@ -298,6 +300,14 @@ fn run_compositor() {
                         show_text_input,
                     );
                 }
+                ActiveSurface::Call => {
+                    if let Some(ref c) = call {
+                        println!("[compositor] frame:{} call -> {} [{}]",
+                            frame, c.display_name(), c.state.label());
+                    } else {
+                        println!("[compositor] frame:{} call (no active call)", frame);
+                    }
+                }
                 ActiveSurface::Messenger => {
                     println!("[compositor] frame:{} messenger", frame);
                 }
@@ -326,11 +336,21 @@ fn handle_nav(
     nav:        AiShellNav,
     transition: &mut Option<TransitionState>,
     messenger:  &mut MessengerView,
+    call:       &mut Option<CallSurface>,
     t:          f64,
 ) {
     match nav {
         AiShellNav::GoToCall { ref contact } => {
             println!("[compositor] voice -> call: {}", contact);
+            // Build the call surface from the contact handle.
+            // The handle is normalized to "@name"; the key fingerprint is
+            // resolved via DHT handle lookup (placeholder until net wired).
+            let handle = if contact.starts_with('@') {
+                contact.clone()
+            } else {
+                format!("@{}", contact)
+            };
+            *call = Some(CallSurface::from_key_hex(Some(handle), "pending0"));
             *transition = Some(TransitionState::new(
                 ActiveSurface::AiShell, ActiveSurface::Call, t
             ));
