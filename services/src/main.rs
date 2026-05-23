@@ -10,6 +10,7 @@ mod voip;
 mod audio;
 mod bootstrap;
 mod ntp_task;
+mod dht_client;
 
 #[tokio::main]
 async fn main() {
@@ -42,6 +43,12 @@ async fn run_daemon() {
     match audio::AudioEngine::new() {
         Ok(_audio) => println!("[daemon] audio engine ready"),
         Err(e)     => println!("[daemon] audio engine unavailable: {} (ok in dev mode)", e),
+    }
+
+    // DHT client -- resolves @handle -> key -> peer addr over the network.
+    match dht_client::DhtClient::new(&my_key).await {
+        Ok(_dht) => println!("[daemon] DHT client ready -- bootstrap resolution online"),
+        Err(e)   => println!("[daemon] DHT client unavailable: {} (ok in dev mode)", e),
     }
 
     println!("[daemon] ready -- waiting for IPC commands from compositor");
