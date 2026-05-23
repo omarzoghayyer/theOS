@@ -6,6 +6,7 @@
 pub mod node;
 pub mod routing;
 pub mod message;
+pub mod resolver;
 
 pub use node::{DhtNode, NodeId};
 pub use routing::RoutingTable;
