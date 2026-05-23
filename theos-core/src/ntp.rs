@@ -99,7 +99,7 @@ impl NtpSample {
 
 // -- ClockState ---------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClockState {
     /// Never synced -- clock is local system time only
     Unsynced,

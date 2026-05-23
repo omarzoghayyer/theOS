@@ -9,6 +9,7 @@
 mod voip;
 mod audio;
 mod bootstrap;
+mod ntp_task;
 
 #[tokio::main]
 async fn main() {
@@ -27,6 +28,11 @@ async fn main() {
 
 async fn run_daemon() {
     println!("[daemon] theOS Connectivity Daemon starting");
+
+    // Start NTP clock sync -- reliable time hardens replay protection.
+    let clock = ntp_task::new_clock();
+    ntp_task::spawn(clock.clone());
+    println!("[daemon] NTP clock sync task started");
 
     let my_key = [0xAAu8; 32];
 
