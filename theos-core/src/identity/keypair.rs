@@ -147,6 +147,7 @@ fn storage_path() -> String {
     "/tmp/theos-identity".to_string()
 }
 
+#[allow(dead_code)] // fallback RNG path, kept for no-getrandom targets
 fn read_random_bytes() -> [u8; 32] {
     let mut bytes = [0u8; 32];
     if let Ok(data) = fs::read("/dev/urandom") {

@@ -1,3 +1,7 @@
+// NOTE: The audio capture/playback/OPUS/RTP helpers below are staged for
+// the demo call path -- implemented but not yet wired into the live call
+// loop. Flagged as unused until then. Intentional; do not delete.
+#![allow(dead_code)]
 // audio.rs — Audio Engine
 // Handles microphone capture and speaker playback
 // Streams audio via RTP over satellite connection
@@ -30,8 +34,8 @@ impl AudioEngine {
     pub async fn start_capture_and_playback(&self, rtp_port: u16) -> Result<(), Box<dyn Error>> {
         println!("Starting audio capture and playback on RTP port {}", rtp_port);
 
-        let mut stop_rx_capture = self.stop_rx.clone();
-        let mut stop_rx_playback = self.stop_rx.clone();
+        let stop_rx_capture = self.stop_rx.clone();
+        let stop_rx_playback = self.stop_rx.clone();
 
         // Outbound: capture microphone and send RTP packets
         tokio::spawn(async move {

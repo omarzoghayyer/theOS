@@ -266,7 +266,7 @@ impl MessageStore {
         limit:           usize,
     ) -> Vec<(u64, bool, Vec<u8>, u64, StoredDelivery)> {
         // (id, from_me, plaintext, timestamp, delivery)
-        let mut filtered: Vec<&StoredMessage> = self.messages.iter()
+        let filtered: Vec<&StoredMessage> = self.messages.iter()
             .filter(|m| m.conversation_id == conversation_id)
             .collect();
         let skip = if filtered.len() > limit { filtered.len() - limit } else { 0 };

@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 default = []
 persistence = ["dep:rusqlite"]
+compositor = []
 
 [dependencies]
 chacha20poly1305 = "0.10"

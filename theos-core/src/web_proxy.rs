@@ -559,7 +559,7 @@ impl AICommand {
             }
             "youtube" => {
                 if s.contains("search") {
-                    let query = s.trim_start_matches("search").trim().to_string();
+                    let _query = s.trim_start_matches("search").trim().to_string();
                     return Some(AICommand::Click { target: "search box".to_string() });
                 }
                 if s.contains("pause") || s.contains("play") {

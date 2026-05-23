@@ -11,7 +11,6 @@
 //   - Records expire after 24 hours unless re-announced
 //   - Handle -> pubkey is the canonical mapping; pubkey -> handle is derived
 
-use crate::dht::node::NodeId;
 use crate::identity::keypair::{IdentityKey, KeyPair};
 use std::collections::HashMap;
 
