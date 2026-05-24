@@ -11,6 +11,8 @@
 #[cfg(feature = "compositor")] mod input;
 #[cfg(feature = "compositor")] mod ai_shell;
 #[cfg(feature = "compositor")] mod messenger_ui;
+#[cfg(feature = "compositor")] mod call_ui_render;
+#[cfg(feature = "compositor")] mod text_renderer;
 #[cfg(feature = "compositor")] mod call_ui;
 #[cfg(feature = "compositor")] mod drm_backend;
 mod crypto;

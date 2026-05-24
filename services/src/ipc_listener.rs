@@ -28,7 +28,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 
-use theos_core::ipc_protocol::{IpcMessage, IpcFrame, CallState};
+use theos_core::ipc_protocol::{IpcMessage, IpcFrame};
 
 use crate::dht_client::DhtClient;
 
