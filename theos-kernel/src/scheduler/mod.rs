@@ -46,6 +46,7 @@
 // Phase 4: multi-core load balancing (Pixel 7 Pro: 4+4 big.LITTLE cores).
 
 use crate::process::{Pid, Priority};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 // -- Quantum sizes in microseconds --------------------------------------------
 const QUANTUM_US_P0: u32 =     2_000; // 2ms  -- audio period
@@ -76,6 +77,19 @@ struct RunQueue {
     remaining_us: u32,
     // Whether satellite beam switch is in progress
     beam_switch_active: bool,
+}
+
+/// Currently executing process (atomic for IRQ safety)
+static CURRENT_PID: AtomicU32 = AtomicU32::new(u32::MAX);
+
+pub fn current_pid() -> Option<Pid> {
+    let val = CURRENT_PID.load(Ordering::Relaxed);
+    if val == u32::MAX { None } else { Some(Pid(val)) }
+}
+
+pub fn set_current_pid(pid: Option<Pid>) {
+    let val = pid.map(|p| p.0).unwrap_or(u32::MAX);
+    CURRENT_PID.store(val, Ordering::Relaxed);
 }
 
 impl RunQueue {

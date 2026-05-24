@@ -158,6 +158,7 @@ pub fn init(gic_dist_base: u64, gic_cpu_base: u64) {
     timer_init();
 }
 
+#[cfg(target_arch = "aarch64")]
 fn timer_init() {
     // Read the timer frequency from hardware
     let freq: u64;
@@ -193,6 +194,12 @@ fn timer_init() {
     crate::println!("[gic] timer IRQ {}: enabled", TIMER_IRQ);
 }
 
+
+#[cfg(not(target_arch = "aarch64"))]
+fn timer_init() {
+    // Stub for non-ARM64 (testing)
+}
+
 // -- IRQ management -----------------------------------------------------------
 
 /// Enable a specific IRQ in the GIC distributor.
@@ -222,7 +229,16 @@ pub fn handle_irq() -> u32 {
     let irq = iar & 0x3FF; // bits [9:0] = IRQ ID
 
     match irq {
-        TIMER_IRQ => handle_timer(),
+        TIMER_IRQ => {
+            #[cfg(target_arch = "aarch64")]
+            handle_timer();
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                if let Some(_next_pid) = crate::scheduler::tick(1000) {
+                    crate::scheduler::set_current_pid(Some(_next_pid));
+                }
+            }
+        }
         1022 | 1023 => {
             // Spurious interrupt -- ignore
         }
@@ -237,6 +253,7 @@ pub fn handle_irq() -> u32 {
     irq
 }
 
+#[cfg(target_arch = "aarch64")]
 fn handle_timer() {
     // Reprogram timer for next tick before doing any work
     // This keeps the tick rate accurate regardless of handler duration
@@ -250,11 +267,12 @@ fn handle_timer() {
 
     // Notify scheduler -- 1ms elapsed
     // If a context switch is needed, scheduler returns the next PID
-    let _next = crate::scheduler::tick(1000); // 1000 microseconds = 1ms
-
-    // TODO Phase 2: if next.is_some(), perform context switch here
-    // This requires saving current process context from the exception frame
-    // and calling process::switch(current_pid, next_pid)
+    if let Some(next_pid) = crate::scheduler::tick(1000) {
+        // Update current process in scheduler's atomic
+        crate::scheduler::set_current_pid(Some(next_pid));
+        // TODO Phase 2: Wire actual context switching here
+        // This requires saving current process context and calling process::switch()
+    }
 }
 
 // -- Exception vector ---------------------------------------------------------
@@ -269,6 +287,7 @@ fn handle_timer() {
 // We only handle IRQ from Current EL with SPx (kernel IRQs).
 // All other entries jump to unexpected_exception for now.
 
+#[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
     // Align to 2KB -- ARM64 VBAR_EL1 requirement
     ".balign 2048",
@@ -364,6 +383,7 @@ pub extern "C" fn __rust_irq_handler() {
 
 /// Install the exception vector and enable IRQs at EL1.
 /// Must be called after GIC init.
+#[cfg(target_arch = "aarch64")]
 pub fn install_exception_vector() {
     unsafe {
         // Point VBAR_EL1 at our vector table
@@ -378,4 +398,9 @@ pub fn install_exception_vector() {
     }
     crate::println!("[gic] exception vector: installed");
     crate::println!("[gic] IRQs: unmasked at EL1");
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub fn install_exception_vector() {
+    // Stub for non-ARM64 (testing)
 }

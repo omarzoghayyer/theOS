@@ -11,6 +11,7 @@ mod audio;
 mod bootstrap;
 mod ntp_task;
 mod dht_client;
+mod ipc_listener;
 
 #[tokio::main]
 async fn main() {
@@ -46,9 +47,18 @@ async fn run_daemon() {
     }
 
     // DHT client -- resolves @handle -> key -> peer addr over the network.
+    // Shared (Arc<Mutex>) so the IPC listener and future tasks share routing.
     match dht_client::DhtClient::new(&my_key).await {
-        Ok(_dht) => println!("[daemon] DHT client ready -- bootstrap resolution online"),
-        Err(e)   => println!("[daemon] DHT client unavailable: {} (ok in dev mode)", e),
+        Ok(dht) => {
+            println!("[daemon] DHT client ready -- bootstrap resolution online");
+            let dht = std::sync::Arc::new(tokio::sync::Mutex::new(dht));
+            tokio::spawn(async move {
+                if let Err(e) = ipc_listener::serve(dht).await {
+                    println!("[daemon] IPC listener failed: {}", e);
+                }
+            });
+        }
+        Err(e) => println!("[daemon] DHT client unavailable: {} (ok in dev mode)", e),
     }
 
     println!("[daemon] ready -- waiting for IPC commands from compositor");

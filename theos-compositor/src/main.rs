@@ -3,7 +3,7 @@
 // The AI orb is the only interface.
 
 #[cfg(feature = "compositor")] mod render;
-#[cfg(feature = "compositor")] mod ipc;
+#[cfg(feature = "compositor")] mod ipc_client;
 #[cfg(feature = "compositor")] mod shell;
 #[cfg(feature = "compositor")] mod assistant;
 #[cfg(feature = "compositor")] mod settings;
@@ -20,6 +20,7 @@ mod hal;
 
 #[cfg(feature = "compositor")]
 use render::{RenderPipeline, ActiveSurface, Surface, TouchState, TransitionState, OrbState};
+#[cfg(feature = "compositor")] use ipc_client::IpcClient;
 #[cfg(feature = "compositor")] use shell::Shell;
 #[cfg(feature = "compositor")] use assistant::Assistant;
 #[cfg(feature = "compositor")] use ai_shell::{AiShell, AiShellNav, AiShellState, InputMode};
@@ -31,7 +32,8 @@ use render::{RenderPipeline, ActiveSurface, Surface, TouchState, TransitionState
 use theos_core::wake_word::{WakeEngine, WakeState, strip_wake_word, contains_wake_word};
 use theos_core::power::{PowerManager, PowerState};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     println!("theOS Wayland Compositor");
     println!("Satellite-First Mobile OS");
     println!("Voice-First Interface -- no buttons");
@@ -43,7 +45,7 @@ fn main() {
     }
 
     #[cfg(feature = "compositor")]
-    run_compositor();
+    run_compositor().await;
 }
 
 #[cfg(feature = "compositor")]
@@ -55,7 +57,7 @@ fn now_secs() -> f64 {
 }
 
 #[cfg(feature = "compositor")]
-fn run_compositor() {
+async fn run_compositor() {
     // -- Initialize core systems ----------------------------------------------
     let mut wake    = WakeEngine::new();
     let mut power   = PowerManager::new();
@@ -65,8 +67,56 @@ fn run_compositor() {
     let mut shell     = Shell::new();
     let mut assistant = Assistant::new();
     let mut ai_shell  = AiShell::new();
+    // Test trigger: auto-call "sarah" after 5 seconds (frame ~300 at 60fps)
+    let mut frame_counter = 0u32;
+
     let mut messenger = MessengerView::new();
-    let mut call: Option<CallSurface> = None;
+        // -- Initialize IPC client to daemon ----------------------------------------
+    let ipc_task = tokio::spawn(async {
+        match IpcClient::connect().await {
+            Ok(client) => {
+                println!("[compositor] IPC client connected");
+                Some(client)
+            }
+            Err(e) => {
+                eprintln!("[compositor] IPC client failed: {}", e);
+                None
+            }
+        }
+    });
+
+    // For now, we'll handle IPC in a simpler way: spawn tasks on-demand
+    // when GoToCall happens. We'll improve this later.
+    
+let mut call: Option<CallSurface> = None;
+    // -- IPC Channel for spawning async tasks from the sync render loop -------
+    let (ipc_tx, mut ipc_rx) = tokio::sync::mpsc::channel::<String>(10);
+    
+    // Spawn the IPC task that listens for call requests
+    tokio::spawn(async move {
+        match IpcClient::connect().await {
+            Ok(mut client) => {
+                println!("[compositor-ipc] connected to daemon");
+                while let Some(contact) = ipc_rx.recv().await {
+                    println!("[compositor-ipc] received call request: {}", contact);
+                    match client.start_call(&contact).await {
+                        Ok(reply) => println!("[compositor-ipc] daemon reply: {:?}", reply),
+                        Err(e) => eprintln!("[compositor-ipc] call failed: {}", e),
+                    }
+                }
+            }
+            Err(e) => eprintln!("[compositor-ipc] failed to connect: {}", e.to_string()),
+        }
+    });
+
+
+        // TEST: Trigger a call to @sarah after a brief delay
+    let ipc_tx_test = ipc_tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        println!("[test] triggering GoToCall @sarah");
+        let _ = ipc_tx_test.send("@sarah".to_string()).await;
+    });
 
     let demo_convs = vec![
         ConvPreview {
@@ -189,7 +239,7 @@ fn run_compositor() {
                         ai_shell.input_mode = InputMode::Typing;
                         let nav = ai_shell.submit_input();
                         show_text_input = false;
-                        handle_nav(nav, &mut transition, &mut messenger, &mut call, t);
+                        handle_nav(nav, &mut transition, &mut messenger, &mut call, t, &ipc_tx);
                     }
                 }
                 InputEvent::KeyEscape => {
@@ -246,7 +296,7 @@ fn run_compositor() {
                     pipeline.navigate(ActiveSurface::AiShell);
                 }
 
-                handle_nav(nav, &mut transition, &mut messenger, &mut call, t);
+                handle_nav(nav, &mut transition, &mut messenger, &mut call, t, &ipc_tx);
             }
             wake.on_response_complete();
         }
@@ -338,22 +388,25 @@ fn handle_nav(
     messenger:  &mut MessengerView,
     call:       &mut Option<CallSurface>,
     t:          f64,
+    ipc_tx:     &tokio::sync::mpsc::Sender<String>,  // channel to spawn IPC tasks
 ) {
     match nav {
         AiShellNav::GoToCall { ref contact } => {
             println!("[compositor] voice -> call: {}", contact);
-            // Build the call surface from the contact handle.
-            // The handle is normalized to "@name"; the key fingerprint is
-            // resolved via DHT handle lookup (placeholder until net wired).
             let handle = if contact.starts_with('@') {
                 contact.clone()
             } else {
                 format!("@{}", contact)
             };
-            *call = Some(CallSurface::from_key_hex(Some(handle), "pending0"));
+            *call = Some(CallSurface::from_key_hex(Some(handle.clone()), "pending0"));
             *transition = Some(TransitionState::new(
                 ActiveSurface::AiShell, ActiveSurface::Call, t
             ));
+            
+            // Spawn IPC task to notify daemon
+            let handle_clone = handle.clone();
+            let tx = ipc_tx.clone();
+            let _ = tx.try_send(handle_clone);
         }
         AiShellNav::GoToMessages => {
             println!("[compositor] voice -> messenger");
