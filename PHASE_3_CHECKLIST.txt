@@ -1,0 +1,75 @@
+═══════════════════════════════════════════════════════════════════════════════
+PHASE 3 DRIVER IMPLEMENTATION CHECKLIST
+Target: Google Pixel 7 Pro (cheetah) | Kernel: theOS aarch64
+═══════════════════════════════════════════════════════════════════════════════
+
+🔧 PRE-HARDWARE TASKS (Do Now)
+  ☐ Create theos-kernel/src/drivers/ directory structure
+  ☐ Design driver IPC protocols (already in arch doc)
+  ☐ Set up firmware paths (/lib/firmware/)
+  ☐ Prepare init process spawner (replaces idle_loop)
+
+📱 HARDWARE ARRIVAL
+  ☐ Pixel 7 Pro × 1 received
+  ☐ Verify device powers on + USB works
+
+🔌 BOOT PHASE
+  ☐ Flash PostmarketOS base to Pixel
+  ☐ Flash theOS kernel (Phase 2)
+  ☐ Verify kernel boots on real hardware
+  ☐ UART output visible on serial console
+
+🎵 AUDIO DRIVER (WCD codec) — Days 1-4
+  ☐ Write theos-kernel/src/drivers/audio.rs
+  ☐ Implement WCD9385 register definitions
+  ☐ Initialize I2C + I2S interfaces
+  ☐ Load codec firmware
+  ☐ Test: microphone capture → UART output
+  ☐ Test: playback test tone via speaker
+  ☐ Integrate with services/voip.rs
+  ☐ Test: VoIP audio capture/playback
+
+📡 WIFI DRIVER (ath11k port) — Days 2-5
+  ☐ Write theos-kernel/src/drivers/wifi.rs
+  ☐ Load ath11k firmware
+  ☐ Scan for networks (UART output)
+  ☐ Connect to test network
+  ☐ Acquire IP via DHCP
+  ☐ Test: ping upstream (connectivity)
+  ☐ Implement UDP socket layer
+  ☐ Test: send/recv UDP packets
+  ☐ Integrate with daemon (services/dht_client.rs)
+  ☐ Test: bootstrap server resolution
+
+👆 TOUCH DRIVER (I2C) — Days 1-3
+  ☐ Write theos-kernel/src/drivers/touch.rs
+  ☐ Initialize I2C + GPIO interrupt
+  ☐ Read touch controller ID (I2C)
+  ☐ Test: tap screen → UART output
+  ☐ Classify gestures (tap, swipe)
+  ☐ Integrate with compositor
+  ☐ Test: call surface buttons respond
+
+🚀 INTEGRATION — Days 4-6
+  ☐ All drivers spawn from init without panics
+  ☐ Compositor receives touch input
+  ☐ Voice intent: "call alice"
+  ☐ DHT resolution works
+  ☐ RTP audio flow: Pixel 1 → Pixel 2
+  ☐ Call stays active for 60 seconds
+  ☐ Hang up cleanly
+
+🎬 DEMO
+  ☐ Two Pixel 7 Pros with theOS kernel
+  ☐ User says: "call alice" on Pixel 1
+  ☐ Pixel 2 rings
+  ☐ User answers on Pixel 2
+  ☐ Clear audio, both directions
+  ☐ Duration: 00:60 visible
+  ☐ Hang up via UI button
+  ☐ Status: "Call ended"
+
+═══════════════════════════════════════════════════════════════════════════════
+ESTIMATED TIMELINE: 9-13 days (parallel tasks welcome)
+SUCCESS: 60-second encrypted voice call, no phone number, no carrier
+═══════════════════════════════════════════════════════════════════════════════
