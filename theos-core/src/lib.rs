@@ -19,3 +19,4 @@ pub mod ipc_protocol;
 pub mod buddy_allocator;
 pub mod kernel_ipc_tests;
 pub mod kernel_scheduler_tests;
+pub mod ai_fallback;

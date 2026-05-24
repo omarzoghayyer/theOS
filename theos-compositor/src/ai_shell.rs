@@ -490,3 +490,27 @@ mod tests {
         assert_eq!(shell.sys.dht_peers, 7);
     }
 }
+
+// Claude API integration (added for AI-Native OS)
+// Gracefully falls back to heuristic parsing if unavailable
+
+#[cfg(feature = "claude")]
+mod claude_integration {
+    use std::env;
+    
+    pub fn try_init_claude() -> Option<String> {
+        env::var("ANTHROPIC_API_KEY").ok()
+    }
+}
+
+// Claude API integration (added for AI-Native OS)
+// Gracefully falls back to heuristic parsing if unavailable
+
+#[cfg(feature = "claude")]
+mod claude_integration {
+    use std::env;
+    
+    pub fn try_init_claude() -> Option<String> {
+        env::var("ANTHROPIC_API_KEY").ok()
+    }
+}
