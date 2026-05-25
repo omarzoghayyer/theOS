@@ -433,3 +433,4 @@ fn handle_nav(
         AiShellNav::None => {}
     }
 }
+#[cfg(feature = "compositor")] mod render_performance;
