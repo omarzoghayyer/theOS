@@ -152,49 +152,35 @@ pub struct MessageEncryptor {
 }
 
 impl MessageEncryptor {
+    /// Fixed session id for at-rest storage. Storage is one logical session
+    /// per device; per-message uniqueness comes from the counter (nonce).
+    const STORE_SESSION_ID: u64 = 0x7468_656f_735f_6d73; // "theos_ms"
+
+    /// Derive the storage key from the owner key via HKDF-SHA256 with domain
+    /// separation. Replaces the previous placeholder byte-mangle.
     pub fn new(owner_key: &[u8; 32]) -> Self {
-        // Derive storage key from owner key
-        // Production: HKDF with domain separation "theos-message-store-v1"
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        let hk = Hkdf::<Sha256>::new(None, owner_key);
         let mut key = [0u8; 32];
-        for i in 0..32 {
-            key[i] = owner_key[i]
-                .wrapping_mul(0x37)
-                .wrapping_add(0x6b)
-                ^ owner_key[(i + 7) % 32];
-        }
+        hk.expand(b"theos-message-store-v1", &mut key)
+            .expect("32 is a valid HKDF-SHA256 output length");
         Self { key }
     }
 
-    /// Encrypt plaintext message content.
-    /// Returns (ciphertext, nonce_counter).
+    /// Encrypt message content with real ChaCha20-Poly1305 (via crypto::encrypt).
+    /// `counter` must be unique per message under this key (nonce uniqueness).
     pub fn encrypt(&self, plaintext: &[u8], counter: u64) -> Vec<u8> {
-        // Production: ChaCha20-Poly1305 with nonce = counter || 0x00...
-        // Stub: XOR stream cipher for structure
-        let mut out = plaintext.to_vec();
-        for (i, byte) in out.iter_mut().enumerate() {
-            let key_byte = self.key[i % 32];
-            let counter_byte = ((counter >> (i % 8 * 8)) & 0xFF) as u8;
-            *byte ^= key_byte ^ counter_byte;
-        }
-        // Append 16-byte auth tag stub
-        out.extend_from_slice(&self.key[..16]);
-        out
+        // crypto::encrypt only errors on AEAD internal failure, which does not
+        // occur for in-memory plaintext; a panic here would be a library bug.
+        crate::crypto::encrypt(&self.key, counter, Self::STORE_SESSION_ID, plaintext)
+            .expect("ChaCha20-Poly1305 encryption of in-memory plaintext cannot fail")
     }
 
-    /// Decrypt ciphertext back to plaintext.
-    /// Returns None if auth tag validation fails.
+    /// Decrypt and AUTHENTICATE. Returns None if the Poly1305 tag fails —
+    /// i.e. tampered ciphertext, wrong key, or wrong counter.
     pub fn decrypt(&self, ciphertext: &[u8], counter: u64) -> Option<Vec<u8>> {
-        if ciphertext.len() < 16 { return None; }
-        let tag_start = ciphertext.len() - 16;
-        // Production: verify Poly1305 auth tag here
-        let ct = &ciphertext[..tag_start];
-        let mut out = ct.to_vec();
-        for (i, byte) in out.iter_mut().enumerate() {
-            let key_byte = self.key[i % 32];
-            let counter_byte = ((counter >> (i % 8 * 8)) & 0xFF) as u8;
-            *byte ^= key_byte ^ counter_byte;
-        }
-        Some(out)
+        crate::crypto::decrypt(&self.key, counter, Self::STORE_SESSION_ID, ciphertext).ok()
     }
 }
 
