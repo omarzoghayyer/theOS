@@ -9,6 +9,7 @@ mod memory;
 mod process;
 mod ipc;
 mod scheduler;
+mod drivers;
 
 #[cfg(target_arch = "aarch64")]
 #[unsafe(no_mangle)]
