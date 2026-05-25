@@ -119,7 +119,7 @@ mod tests {
         let m = msg(42);
         assert_eq!(m.tag, 42);
         assert_eq!(m.len, 0);
-        assert_eq!(m.data(), &[]);
+        assert_eq!(m.data(), &[] as &[u8]);
     }
 
     #[test]
@@ -141,7 +141,7 @@ mod tests {
     fn test_message_empty_payload() {
         let m = msg_data(5, &[]);
         assert_eq!(m.len, 0);
-        assert_eq!(m.data(), &[]);
+        assert_eq!(m.data(), &[] as &[u8]);
     }
 
     #[test]
