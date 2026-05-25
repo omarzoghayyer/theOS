@@ -60,18 +60,32 @@ pub struct HandleAnnouncement {
     pub handle:     String,
     pub pubkey:     IdentityKey,
     pub timestamp:  u64,        // unix seconds -- when this was signed
-    pub signature:  Vec<u8>,    // Ed25519 sig over (handle || pubkey || timestamp)
+    pub signature:  Vec<u8>,    // Ed25519 sig (handle || pubkey || timestamp || prekey?)
     pub expires_at: u64,        // timestamp + HANDLE_TTL_SECS
+    /// Optional X25519 signed-prekey public bytes, published for X3DH.
+    /// When present, it is covered by the signature.
+    pub prekey:     Option<[u8; 32]>,
 }
 
 impl HandleAnnouncement {
-    /// Create and sign a new announcement.
+    /// Create and sign a new announcement (no published prekey).
     pub fn new(handle: &str, keypair: &KeyPair) -> Result<Self, HandleError> {
+        Self::new_with_prekey(handle, keypair, None)
+    }
+
+    /// Create and sign a new announcement, optionally publishing an X25519
+    /// signed-prekey public key for X3DH. When `prekey` is Some, it is covered
+    /// by the signature (so a peer can trust the prekey belongs to this identity).
+    pub fn new_with_prekey(
+        handle: &str,
+        keypair: &KeyPair,
+        prekey: Option<[u8; 32]>,
+    ) -> Result<Self, HandleError> {
         validate_handle(handle)?;
 
         let timestamp  = now_secs();
         let expires_at = timestamp + HANDLE_TTL_SECS;
-        let payload    = Self::signing_payload(handle, &keypair.public, timestamp);
+        let payload    = Self::signing_payload(handle, &keypair.public, timestamp, prekey.as_ref());
         let signature  = keypair.sign(&payload);
 
         Ok(Self {
@@ -80,6 +94,7 @@ impl HandleAnnouncement {
             timestamp,
             signature,
             expires_at,
+            prekey,
         })
     }
 
@@ -93,7 +108,7 @@ impl HandleAnnouncement {
         if self.is_expired() {
             return Err(HandleError::Expired);
         }
-        let payload = Self::signing_payload(&self.handle, &self.pubkey, self.timestamp);
+        let payload = Self::signing_payload(&self.handle, &self.pubkey, self.timestamp, self.prekey.as_ref());
         if !KeyPair::verify(&self.pubkey, &payload, &self.signature) {
             return Err(HandleError::InvalidSignature);
         }
@@ -104,13 +119,23 @@ impl HandleAnnouncement {
         now_secs() > self.expires_at
     }
 
-    /// The bytes that are signed: handle || pubkey || timestamp_le
-    fn signing_payload(handle: &str, pubkey: &IdentityKey, timestamp: u64) -> Vec<u8> {
+    /// The bytes that are signed: handle || pubkey || timestamp_le || prekey?
+    /// The prekey, when present, is included so a peer can trust it belongs to
+    /// this identity. Domain bumped to v2 for the prekey-carrying format.
+    fn signing_payload(
+        handle: &str,
+        pubkey: &IdentityKey,
+        timestamp: u64,
+        prekey: Option<&[u8; 32]>,
+    ) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(handle.as_bytes());
         payload.extend_from_slice(&pubkey.0);
         payload.extend_from_slice(&timestamp.to_le_bytes());
-        payload.extend_from_slice(b"theos-handle-v1"); // domain separation
+        if let Some(pk) = prekey {
+            payload.extend_from_slice(pk);
+        }
+        payload.extend_from_slice(b"theos-handle-v2"); // domain separation (v2: prekey)
         payload
     }
 }
