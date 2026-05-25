@@ -2,3 +2,4 @@
 // Produces the initial shared root key + peer ratchet public key that seed the
 // Double Ratchet (crypto/ratchet/). Built: prekey. Pending: handshake.
 pub mod prekey;
+pub mod handshake;
