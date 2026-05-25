@@ -494,3 +494,56 @@ mod tests {
         assert_eq!(reg.count(), 1); // still there -- not expired
     }
 }
+
+#[cfg(test)]
+mod prekey_announcement_tests {
+    use super::*;
+    use crate::identity::keypair::KeyPair;
+
+    fn make_keypair() -> KeyPair {
+        KeyPair::generate()
+    }
+
+    #[test]
+    fn prekey_announcement_verifies() {
+        let kp = make_keypair();
+        let prekey = kp.x25519_identity_public(); // any valid 32-byte X25519 key
+        let ann = HandleAnnouncement::new_with_prekey("omar", &kp, Some(prekey)).unwrap();
+        assert_eq!(ann.prekey, Some(prekey));
+        assert!(ann.verify().is_ok());
+    }
+
+    #[test]
+    fn no_prekey_announcement_still_verifies() {
+        // Backward-compatible path: new() sets prekey = None and verifies.
+        let kp = make_keypair();
+        let ann = HandleAnnouncement::new("omar", &kp).unwrap();
+        assert_eq!(ann.prekey, None);
+        assert!(ann.verify().is_ok());
+    }
+
+    #[test]
+    fn tampered_prekey_fails_verification() {
+        // The prekey is covered by the signature: altering it must break verify.
+        let kp = make_keypair();
+        let prekey = kp.x25519_identity_public();
+        let mut ann = HandleAnnouncement::new_with_prekey("omar", &kp, Some(prekey)).unwrap();
+        let mut bad = prekey;
+        bad[0] ^= 0xFF;
+        ann.prekey = Some(bad);
+        assert!(matches!(ann.verify(), Err(HandleError::InvalidSignature)));
+    }
+
+    #[test]
+    fn swapped_prekey_fails_verification() {
+        // An attacker substituting a DIFFERENT valid prekey (keeping identity +
+        // signature) must be rejected — the signature binds the specific prekey.
+        let kp = make_keypair();
+        let prekey = kp.x25519_identity_public();
+        let other = make_keypair().x25519_identity_public();
+        assert_ne!(prekey, other);
+        let mut ann = HandleAnnouncement::new_with_prekey("omar", &kp, Some(prekey)).unwrap();
+        ann.prekey = Some(other);
+        assert!(matches!(ann.verify(), Err(HandleError::InvalidSignature)));
+    }
+}
