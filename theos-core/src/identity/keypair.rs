@@ -65,6 +65,28 @@ impl KeyPair {
         Self { public, signing_key }
     }
 
+
+    /// Derive this identity's X25519 keypair for Diffie-Hellman key agreement.
+    ///
+    /// X3DH and the Double Ratchet need DH (X25519), but the identity key is
+    /// Ed25519 (signing). Rather than reuse the Ed25519 scalar (a cross-protocol
+    /// anti-pattern), we derive a SEPARATE X25519 key from the same 32-byte seed
+    /// via HKDF (see crypto::ratchet::dh::DhKeyPair::from_identity_seed).
+    ///
+    /// Deterministic: the same identity always yields the same X25519 key, so it
+    /// survives reload and both parties can rederive it. The Ed25519 signing key
+    /// and this X25519 key never share a secret value.
+    pub fn x25519_identity(&self) -> crate::crypto::ratchet::dh::DhKeyPair {
+        let seed = self.signing_key.to_bytes();
+        crate::crypto::ratchet::dh::DhKeyPair::from_identity_seed(&seed)
+    }
+
+    /// The X25519 identity PUBLIC key, as raw bytes — publishable, e.g. in a
+    /// HandleAnnouncement so a peer can run X3DH against this identity.
+    pub fn x25519_identity_public(&self) -> [u8; 32] {
+        self.x25519_identity().public_bytes()
+    }
+
     /// Load existing keypair from secure storage
     /// Production: unseal from hardware enclave
     /// Dev: load from /tmp/theos-identity (0600 permissions)
@@ -171,4 +193,44 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
         .map(|i| u8::from_str_radix(&s[i..i+2], 16)
             .map_err(|_| format!("invalid hex at position {}", i)))
         .collect()
+}
+
+#[cfg(test)]
+mod x25519_identity_tests {
+    use super::*;
+    use crate::crypto::ratchet::dh::DhKeyPair;
+
+    #[test]
+    fn x25519_identity_matches_direct_derivation() {
+        let kp = KeyPair::generate();
+        let seed = kp.signing_key.to_bytes();
+        let direct = DhKeyPair::from_identity_seed(&seed);
+        assert_eq!(kp.x25519_identity_public(), direct.public_bytes());
+    }
+
+    #[test]
+    fn x25519_identity_is_deterministic() {
+        let kp = KeyPair::generate();
+        assert_eq!(kp.x25519_identity_public(), kp.x25519_identity_public());
+    }
+
+    #[test]
+    fn x25519_identity_differs_from_ed25519_public() {
+        // Separate key, not a reinterpretation of the Ed25519 public bytes.
+        let kp = KeyPair::generate();
+        assert_ne!(kp.x25519_identity_public(), kp.public.0);
+    }
+
+    #[test]
+    fn x25519_identity_survives_reload() {
+        // Same seed -> same X25519 key after a save/load cycle. Two KeyPairs
+        // built from the same seed must expose the same X25519 identity.
+        let kp = KeyPair::generate();
+        let seed = kp.signing_key.to_bytes();
+        let reloaded = KeyPair { 
+            public: kp.public.clone(), 
+            signing_key: ed25519_dalek::SigningKey::from_bytes(&seed),
+        };
+        assert_eq!(kp.x25519_identity_public(), reloaded.x25519_identity_public());
+    }
 }
