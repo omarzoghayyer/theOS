@@ -1,0 +1,16 @@
+# Railway.app configuration for theOS Bootstrap Server
+
+[build]
+builder = "dockerfile"
+dockerfile = "./Dockerfile"
+
+[deploy]
+numReplicas = 1
+startCommand = "/app/bootstrap"
+restartPolicyType = "always"
+restartPolicyMaxRetries = 5
+
+[variables]
+THEOS_BOOTSTRAP_HOST = "0.0.0.0"
+THEOS_BOOTSTRAP_PORT = "7700"
+RUST_LOG = "info"

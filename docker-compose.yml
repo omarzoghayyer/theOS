@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "7700:7700"
+    environment:
+      THEOS_BOOTSTRAP_HOST: "0.0.0.0"
+      THEOS_BOOTSTRAP_PORT: "7700"
+      RUST_LOG: "info"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
