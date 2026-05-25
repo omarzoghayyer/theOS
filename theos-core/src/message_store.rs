@@ -370,12 +370,15 @@ mod tests {
     }
 
     #[test]
-    fn test_decrypt_wrong_counter_gives_wrong_plaintext() {
+    fn test_decrypt_wrong_counter_fails_authentication() {
+        // Real AEAD: the counter is bound into the nonce, so decrypting under
+        // a different counter fails the Poly1305 tag and returns None.
+        // (Previously this asserted "wrong counter = wrong plaintext", which
+        // only held for the old XOR stub and was itself a vulnerability.)
         let e = MessageEncryptor::new(&key());
         let pt = b"test message";
         let ct = e.encrypt(pt, 5);
-        let dec = e.decrypt(&ct, 6).unwrap();
-        assert_ne!(dec, pt); // wrong counter = wrong plaintext
+        assert!(e.decrypt(&ct, 6).is_none());
     }
 
     #[test]
