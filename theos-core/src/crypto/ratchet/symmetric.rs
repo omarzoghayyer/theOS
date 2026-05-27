@@ -28,6 +28,14 @@ impl MessageKey {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    /// Reconstruct a MessageKey from raw bytes. `pub(crate)` only — this is
+    /// for ratchet-state persistence (DhRatchet::serialize / deserialize) and
+    /// must not be exposed beyond the crypto module. Callers are responsible
+    /// for treating the input bytes as secret material.
+    pub(crate) fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
 }
 
 // Deliberately NOT implementing Debug/Display — secret material must not be
@@ -66,6 +74,20 @@ impl ChainKey {
         let idx = self.index;
         self.index += 1;
         (MessageKey(msg_key), idx)
+    }
+
+    /// Borrow the current chain key bytes. `pub(crate)` only — this is for
+    /// ratchet-state persistence (DhRatchet::serialize) and must not leave
+    /// the crypto module. Exposes secret material; treat the borrow as such.
+    pub(crate) fn key_bytes(&self) -> &[u8; 32] {
+        &self.key
+    }
+
+    /// Reconstruct a ChainKey from its serialized parts (key bytes + index).
+    /// `pub(crate)` only — for DhRatchet::deserialize. The caller is
+    /// responsible for ensuring `index` reflects the chain's true position.
+    pub(crate) fn from_parts(key: [u8; 32], index: u32) -> Self {
+        Self { key, index }
     }
 }
 

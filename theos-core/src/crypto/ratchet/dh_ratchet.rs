@@ -37,6 +37,22 @@ pub enum RatchetError {
     MessageKeyGone,
 }
 
+/// Errors from ratchet-state (de)serialization. Distinct from RatchetError
+/// because these are persistence-layer failures, not runtime crypto failures —
+/// callers handle them differently (e.g. surface a version mismatch to the
+/// user; drop a malformed-on-receive message).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RatchetSerdeError {
+    /// Buffer ended mid-field.
+    Truncated,
+    /// Version byte not recognized by this build.
+    BadVersion(u8),
+    /// A length prefix would exceed remaining buffer.
+    BadLength,
+    /// A boolean presence flag was neither 0 nor 1.
+    BadFlag(u8),
+}
+
 /// Header sent alongside each message so the receiver can ratchet correctly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RatchetHeader {
@@ -209,6 +225,167 @@ impl DhRatchet {
 
         Ok(())
     }
+
+    /// Serialize the full ratchet state to a self-describing byte buffer.
+    ///
+    /// Format (v1):
+    ///   1 B  version (= 1)
+    ///   32 B root_key
+    ///   32 B self_kp private bytes
+    ///   1 B  peer_pub present  [+ 32 B peer_pub if 1]
+    ///   1 B  send_chain present [+ 32 B key + 4 B index if 1]
+    ///   1 B  recv_chain present [+ 32 B key + 4 B index if 1]
+    ///   4 B  prev_send_count
+    ///   4 B  skipped entry count, then per entry: 32 B ratchet_pub + 4 B index + 32 B msg_key
+    ///
+    /// The output contains secret material (chain keys, message keys). Callers
+    /// must encrypt at rest (e.g. via message_store's MessageEncryptor).
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(256 + self.skipped.len() * 68);
+        out.push(1u8); // version
+        out.extend_from_slice(&self.root_key);
+        out.extend_from_slice(&self.self_kp.private_bytes());
+
+        match self.peer_pub {
+            Some(p) => { out.push(1); out.extend_from_slice(&p); }
+            None    => { out.push(0); }
+        }
+
+        match &self.send_chain {
+            Some(c) => {
+                out.push(1);
+                out.extend_from_slice(c.key_bytes());
+                out.extend_from_slice(&c.index().to_le_bytes());
+            }
+            None => { out.push(0); }
+        }
+
+        match &self.recv_chain {
+            Some(c) => {
+                out.push(1);
+                out.extend_from_slice(c.key_bytes());
+                out.extend_from_slice(&c.index().to_le_bytes());
+            }
+            None => { out.push(0); }
+        }
+
+        out.extend_from_slice(&self.prev_send_count.to_le_bytes());
+
+        let n: u32 = self.skipped.len() as u32;
+        out.extend_from_slice(&n.to_le_bytes());
+        // Iteration order over a HashMap is unspecified; correctness does not
+        // depend on order (lookups are by (ratchet_pub, index)).
+        for ((rp, idx), mk) in self.skipped.iter() {
+            out.extend_from_slice(rp);
+            out.extend_from_slice(&idx.to_le_bytes());
+            out.extend_from_slice(mk.as_bytes());
+        }
+
+        out
+    }
+
+    /// Reconstruct a DhRatchet from bytes produced by `serialize`.
+    /// Returns RatchetSerdeError on any structural failure.
+    pub fn deserialize(bytes: &[u8]) -> Result<Self, RatchetSerdeError> {
+        let mut c = Cursor::new(bytes);
+
+        let version = c.take_u8()?;
+        if version != 1 {
+            return Err(RatchetSerdeError::BadVersion(version));
+        }
+
+        let root_key = c.take_32()?;
+        let self_kp_priv = c.take_32()?;
+        let self_kp = DhKeyPair::from_private_bytes(self_kp_priv);
+
+        let peer_pub = match c.take_u8()? {
+            0 => None,
+            1 => Some(c.take_32()?),
+            f => return Err(RatchetSerdeError::BadFlag(f)),
+        };
+
+        let send_chain = match c.take_u8()? {
+            0 => None,
+            1 => {
+                let key = c.take_32()?;
+                let idx = c.take_u32_le()?;
+                Some(ChainKey::from_parts(key, idx))
+            }
+            f => return Err(RatchetSerdeError::BadFlag(f)),
+        };
+
+        let recv_chain = match c.take_u8()? {
+            0 => None,
+            1 => {
+                let key = c.take_32()?;
+                let idx = c.take_u32_le()?;
+                Some(ChainKey::from_parts(key, idx))
+            }
+            f => return Err(RatchetSerdeError::BadFlag(f)),
+        };
+
+        let prev_send_count = c.take_u32_le()?;
+
+        let n = c.take_u32_le()?;
+        // Bound the skipped count so a malicious blob can't allocate gigabytes.
+        if n > MAX_SKIP {
+            return Err(RatchetSerdeError::BadLength);
+        }
+        let mut skipped = HashMap::with_capacity(n as usize);
+        for _ in 0..n {
+            let rp = c.take_32()?;
+            let idx = c.take_u32_le()?;
+            let mk = MessageKey::from_bytes(c.take_32()?);
+            skipped.insert((rp, idx), mk);
+        }
+
+        Ok(Self {
+            root_key,
+            self_kp,
+            peer_pub,
+            send_chain,
+            recv_chain,
+            skipped,
+            prev_send_count,
+        })
+    }
+}
+
+/// Tiny byte-buffer cursor used by `DhRatchet::deserialize`. Bounds-checks
+/// every read and surfaces a `Truncated` error rather than panicking.
+struct Cursor<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(buf: &'a [u8]) -> Self { Self { buf, pos: 0 } }
+
+    fn take(&mut self, n: usize) -> Result<&'a [u8], RatchetSerdeError> {
+        let end = self.pos.checked_add(n).ok_or(RatchetSerdeError::BadLength)?;
+        if end > self.buf.len() {
+            return Err(RatchetSerdeError::Truncated);
+        }
+        let s = &self.buf[self.pos..end];
+        self.pos = end;
+        Ok(s)
+    }
+
+    fn take_u8(&mut self) -> Result<u8, RatchetSerdeError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn take_u32_le(&mut self) -> Result<u32, RatchetSerdeError> {
+        let s = self.take(4)?;
+        Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    }
+
+    fn take_32(&mut self) -> Result<[u8; 32], RatchetSerdeError> {
+        let s = self.take(32)?;
+        let mut out = [0u8; 32];
+        out.copy_from_slice(s);
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -377,5 +554,100 @@ mod tests {
         // (h1.ratchet_pub), and its key should be waiting in the skipped store.
         let b1 = bob.next_receiving_key(&h1).unwrap();
         assert_eq!(a1.as_bytes(), b1.as_bytes());
+    }
+
+    // ---- Persistence (serialize / deserialize) ------------------------------
+
+    #[test]
+    fn serialize_roundtrip_preserves_keys() {
+        // Round-tripping a ratchet through serialize/deserialize must produce
+        // an identical key stream — proves all live state is captured.
+        let (mut alice, mut bob) = pair();
+
+        // Snapshot Bob immediately after construction, before any receive.
+        let bob_bytes = bob.serialize();
+        let mut bob_restored = DhRatchet::deserialize(&bob_bytes).unwrap();
+
+        // Alice sends; both Bobs should derive the same key.
+        let (ak, hdr) = alice.next_sending_key().unwrap();
+        let bk_orig = bob.next_receiving_key(&hdr).unwrap();
+        let bk_restored = bob_restored.next_receiving_key(&hdr).unwrap();
+
+        assert_eq!(ak.as_bytes(), bk_orig.as_bytes());
+        assert_eq!(ak.as_bytes(), bk_restored.as_bytes());
+    }
+
+    #[test]
+    fn serialize_roundtrip_preserves_skip_state() {
+        // A ratchet holding stashed (skipped) keys must round-trip them, so
+        // an out-of-order arrival after restart still decrypts.
+        let (mut alice, mut bob) = pair();
+
+        // Alice sends three; Bob receives msg 2 first, stashing 0 and 1.
+        let (a0, h0) = alice.next_sending_key().unwrap();
+        let (a1, h1) = alice.next_sending_key().unwrap();
+        let (_a2, h2) = alice.next_sending_key().unwrap();
+        bob.next_receiving_key(&h2).unwrap();
+        // Bob's skipped store now contains the keys for indices 0 and 1.
+        assert_eq!(bob.skipped.len(), 2);
+
+        // Persist and reload.
+        let bob_bytes = bob.serialize();
+        let mut bob_restored = DhRatchet::deserialize(&bob_bytes).unwrap();
+        assert_eq!(bob_restored.skipped.len(), 2);
+
+        // The restored Bob can still decrypt the stragglers.
+        let b0 = bob_restored.next_receiving_key(&h0).unwrap();
+        let b1 = bob_restored.next_receiving_key(&h1).unwrap();
+        assert_eq!(a0.as_bytes(), b0.as_bytes());
+        assert_eq!(a1.as_bytes(), b1.as_bytes());
+    }
+
+    #[test]
+    fn serialize_roundtrip_across_rotation() {
+        // Persist after a DH rotation; the restored ratchet must continue
+        // in lockstep with its peer across further turns.
+        let (mut alice, mut bob) = pair();
+
+        // One full round trip rotates both sides.
+        let (_a0, h0) = alice.next_sending_key().unwrap();
+        bob.next_receiving_key(&h0).unwrap();
+        let (_b0, hb) = bob.next_sending_key().unwrap();
+        alice.next_receiving_key(&hb).unwrap();
+
+        // Persist Alice mid-conversation and reload.
+        let alice_bytes = alice.serialize();
+        let mut alice_restored = DhRatchet::deserialize(&alice_bytes).unwrap();
+
+        // Both Alices should produce the same next sending key (they share
+        // the same root, send chain, and ratchet keypair after deserialize).
+        let (ak_orig, hdr_orig) = alice.next_sending_key().unwrap();
+        let (ak_restored, hdr_restored) = alice_restored.next_sending_key().unwrap();
+        assert_eq!(ak_orig.as_bytes(), ak_restored.as_bytes());
+        assert_eq!(hdr_orig.ratchet_pub, hdr_restored.ratchet_pub);
+        assert_eq!(hdr_orig.msg_index, hdr_restored.msg_index);
+        assert_eq!(hdr_orig.pn, hdr_restored.pn);
+
+        // And Bob (untouched) can receive either header equivalently.
+        let bk = bob.next_receiving_key(&hdr_orig).unwrap();
+        assert_eq!(ak_orig.as_bytes(), bk.as_bytes());
+    }
+
+    #[test]
+    fn deserialize_rejects_bad_version() {
+        let (alice, _bob) = pair();
+        let mut bytes = alice.serialize();
+        bytes[0] = 99; // corrupt version byte
+        let result = DhRatchet::deserialize(&bytes);
+        assert_eq!(result.err(), Some(RatchetSerdeError::BadVersion(99)));
+    }
+
+    #[test]
+    fn deserialize_rejects_truncated() {
+        let (alice, _bob) = pair();
+        let bytes = alice.serialize();
+        // Truncate to half — any read past the cut should return Truncated.
+        let result = DhRatchet::deserialize(&bytes[..bytes.len() / 2]);
+        assert_eq!(result.err(), Some(RatchetSerdeError::Truncated));
     }
 }
