@@ -67,17 +67,18 @@ impl DhRatchet {
     /// knows the shared root key AND the peer's initial ratchet public key.
     /// Immediately performs a DH step to establish the sending chain.
     pub fn new_initiator(root_key: [u8; 32], peer_pub: DhPublic) -> Self {
-        let mut ratchet = Self {
-            root_key,
-            self_kp: DhKeyPair::generate(),
+        let self_kp = DhKeyPair::generate();
+        let dh = self_kp.diffie_hellman(&peer_pub);
+        let (new_root, send_ck) = kdf_rk(&root_key, &dh);
+        Self {
+            root_key: new_root,
+            self_kp,
             peer_pub: Some(peer_pub),
-            send_chain: None,
+            send_chain: Some(ChainKey::new(send_ck)),
             recv_chain: None,
             skipped: HashMap::new(),
             prev_send_count: 0,
-        };
-        ratchet.dh_ratchet_step(peer_pub);
-        ratchet
+        }
     }
 
     /// Responder side. Called by the party that ran X3DH and received the
@@ -311,14 +312,16 @@ mod tests {
 
     #[test]
     fn dos_rejection_max_jump() {
-        let (mut _alice, mut bob) = pair();
-        let (_ak, hdr) = bob.next_sending_key().expect("bob can send after init");
-        
-        // Construct a header with an impossibly large jump
-        let mut evil_hdr = hdr;
-        evil_hdr.msg_index = MAX_JUMP + 1;
-        
-        // Bob receives it — should reject with SkipLimitExceeded
+        let (mut alice, mut bob) = pair();
+        // Alice sends a normal first message so Bob establishes a recv chain.
+        let (_a0, h0) = alice.next_sending_key().unwrap();
+        bob.next_receiving_key(&h0).unwrap();
+
+        // Craft a header on the same chain claiming an impossibly large index.
+        let (_a1, mut evil_hdr) = alice.next_sending_key().unwrap();
+        evil_hdr.msg_index = MAX_JUMP + 5;
+
+        // Bob receives it — the jump exceeds MAX_JUMP, so reject.
         let result = bob.next_receiving_key(&evil_hdr);
         assert_eq!(result, Err(RatchetError::SkipLimitExceeded));
     }
@@ -326,20 +329,17 @@ mod tests {
     #[test]
     fn dos_rejection_store_full() {
         let (mut alice, mut bob) = pair();
-        
-        // Alice sends MAX_SKIP + 1 messages
-        let mut headers = Vec::new();
-        for _ in 0..=(MAX_SKIP as usize) {
-            if let Some((_, hdr)) = alice.next_sending_key() {
-                headers.push(hdr);
-            }
-        }
-        
-        // Bob tries to skip to the last one (this would require storing MAX_SKIP + 1 keys)
-        if let Some(last_hdr) = headers.last() {
-            let result = bob.next_receiving_key(last_hdr);
-            // Should fail because storing that many keys exceeds MAX_SKIP
-            assert!(result.is_err());
-        }
+        // Alice sends a normal first message so Bob establishes a recv chain at index 1.
+        let (_a0, h0) = alice.next_sending_key().unwrap();
+        bob.next_receiving_key(&h0).unwrap();
+
+        // Craft a header whose index forces a skip-gap strictly greater than the
+        // bound (gap > MAX_SKIP). Bob's chain is at 1, so an index of MAX_SKIP + 2
+        // means a gap of MAX_SKIP + 1 — over the limit, must be rejected.
+        let (_a1, mut far_hdr) = alice.next_sending_key().unwrap();
+        far_hdr.msg_index = MAX_SKIP + 2;
+
+        let result = bob.next_receiving_key(&far_hdr);
+        assert_eq!(result, Err(RatchetError::SkipLimitExceeded));
     }
 }
