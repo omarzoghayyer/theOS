@@ -20,7 +20,7 @@ use super::dh::kdf_ck;
 
 /// A single-message AEAD key. Zeroized on drop — never lingers in freed memory.
 /// Deref to the raw 32 bytes for the existing crypto::encrypt path.
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop, PartialEq, Eq, Debug)]
 pub struct MessageKey([u8; 32]);
 
 impl MessageKey {

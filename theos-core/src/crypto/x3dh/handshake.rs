@@ -148,7 +148,7 @@ mod tests {
         let mut bob_ratchet = x3dh_respond(&bob, bob_prekey, &msg);
 
         let (ak, hdr) = alice_ratchet.next_sending_key().expect("alice sends");
-        let bk = bob_ratchet.next_receiving_key(&hdr);
+        let bk = bob_ratchet.next_receiving_key(&hdr).unwrap();
         assert_eq!(ak.as_bytes(), bk.as_bytes());
     }
 
@@ -176,13 +176,13 @@ mod tests {
 
         // Alice -> Bob
         let (ak, ah) = a.next_sending_key().unwrap();
-        assert_eq!(ak.as_bytes(), b.next_receiving_key(&ah).as_bytes());
+        assert_eq!(ak.as_bytes(), b.next_receiving_key(&ah).unwrap().as_bytes());
         // Bob -> Alice (ratchet heals)
         let (bk, bh) = b.next_sending_key().unwrap();
-        assert_eq!(bk.as_bytes(), a.next_receiving_key(&bh).as_bytes());
+        assert_eq!(bk.as_bytes(), a.next_receiving_key(&bh).unwrap().as_bytes());
         // Alice -> Bob again
         let (ak2, ah2) = a.next_sending_key().unwrap();
-        assert_eq!(ak2.as_bytes(), b.next_receiving_key(&ah2).as_bytes());
+        assert_eq!(ak2.as_bytes(), b.next_receiving_key(&ah2).unwrap().as_bytes());
     }
 
     #[test]
@@ -194,13 +194,13 @@ mod tests {
         let (mut a1, m1) = x3dh_initiate(&alice, &bundle, &bob.public).unwrap();
         let mut b1 = x3dh_respond(&bob, bob_prekey, &m1);
         let (k1, h1) = a1.next_sending_key().unwrap();
-        let _ = b1.next_receiving_key(&h1);
+        let _ = b1.next_receiving_key(&h1).unwrap();
 
         let (bundle2, bob_prekey2) = bob_setup(&bob);
         let (mut a2, m2) = x3dh_initiate(&alice, &bundle2, &bob.public).unwrap();
         let mut b2 = x3dh_respond(&bob, bob_prekey2, &m2);
         let (k2, h2) = a2.next_sending_key().unwrap();
-        let _ = b2.next_receiving_key(&h2);
+        let _ = b2.next_receiving_key(&h2).unwrap();
 
         assert_ne!(k1.as_bytes(), k2.as_bytes());
     }
