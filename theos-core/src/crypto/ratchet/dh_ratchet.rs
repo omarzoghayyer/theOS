@@ -342,4 +342,40 @@ mod tests {
         let result = bob.next_receiving_key(&far_hdr);
         assert_eq!(result, Err(RatchetError::SkipLimitExceeded));
     }
+
+    #[test]
+    fn straggler_decrypts_after_rotation() {
+        // A message sent before a DH rotation must still decrypt when it
+        // arrives after the rotation, using the pn-driven stash.
+        let (mut alice, mut bob) = pair();
+
+        // Alice sends two messages on her first sending chain.
+        let (a0, h0) = alice.next_sending_key().unwrap();
+        let (a1, h1) = alice.next_sending_key().unwrap(); // this one will be delayed
+
+        // Bob receives only msg 0; msg 1 is still in transit.
+        let b0 = bob.next_receiving_key(&h0).unwrap();
+        assert_eq!(a0.as_bytes(), b0.as_bytes());
+
+        // Bob replies — both sides rotate the ratchet on the direction change.
+        let (_breply, hb) = bob.next_sending_key().unwrap();
+        alice.next_receiving_key(&hb).unwrap();
+
+        // Alice sends again on her NEW (rotated) sending chain. This header
+        // carries pn = 2 (her previous chain produced msgs 0 and 1).
+        let (a2, h2) = alice.next_sending_key().unwrap();
+        assert_ne!(h1.ratchet_pub, h2.ratchet_pub); // confirm a rotation happened
+        assert_eq!(h2.pn, 2); // previous chain length is carried in pn
+
+        // Bob receives Alice's post-rotation message. This triggers his own
+        // rotation; the pn=2 lets him stash the straggler (old-chain index 1)
+        // before switching chains.
+        let b2 = bob.next_receiving_key(&h2).unwrap();
+        assert_eq!(a2.as_bytes(), b2.as_bytes());
+
+        // NOW the delayed msg 1 finally arrives. It belongs to the old chain
+        // (h1.ratchet_pub), and its key should be waiting in the skipped store.
+        let b1 = bob.next_receiving_key(&h1).unwrap();
+        assert_eq!(a1.as_bytes(), b1.as_bytes());
+    }
 }
