@@ -76,10 +76,18 @@ impl ReconnectManager {
         );
     }
 
-    /// Check if we've exceeded max retries
+    /// Check if we've exceeded max retries.
+    ///
+    /// The CircuitBreaker is the sole authority on the failure threshold: its
+    /// state flips to Open precisely when failure_count >= CIRCUIT_BREAKER_THRESHOLD
+    /// (see CircuitBreaker::record_failure). The previous implementation also
+    /// ANDed `retry_count >= THRESHOLD`, but retry_count only advances in
+    /// next_backoff(), not on_failure() — so a caller recording failures
+    /// without interleaving backoff calls would never give up even after the
+    /// breaker opened. Trusting the breaker alone removes that duplicate-state
+    /// bug.
     pub fn should_give_up(&self) -> bool {
         matches!(self.circuit_breaker.state(), crate::ipc_robustness::CircuitBreakerState::Open)
-            && self.retry_count >= config::CIRCUIT_BREAKER_THRESHOLD
     }
 
     pub fn last_error(&self) -> Option<&str> {
