@@ -34,7 +34,11 @@ use theos_core::dht::resolver::{
 };
 use theos_core::dht::node::NodeId;
 
-const QUERY_TIMEOUT_MS: u64 = 3000;
+const QUERY_TIMEOUT_MS: u64 = 1000;
+/// FindNode is idempotent and UDP is lossy (especially over satellite), so a
+/// dropped query/response is expected, not fatal. Retry a few times before
+/// giving up. Worst-case total wait = QUERY_RETRIES * QUERY_TIMEOUT_MS.
+const QUERY_RETRIES: u32 = 3;
 
 pub struct DhtClient {
     resolver:  ContactResolver,
@@ -102,44 +106,56 @@ impl DhtClient {
 
     /// Send a FindNode to the bootstrap server and feed results into routing.
     async fn query_bootstrap(&mut self, target: &NodeId) -> Result<(), String> {
+        // One token for the whole query; retries reuse it so a late reply to an
+        // earlier attempt still matches. FindNode is idempotent.
         let token = self.token;
         self.token = self.token.wrapping_add(1);
-
         let pkt = build_find_node(&self.my_node, target, token);
 
-        self.socket.send_to(&pkt, &self.bootstrap).await
-            .map_err(|e| format!("findnode send failed: {}", e))?;
-
-        let mut buf = [0u8; 2048];
-        let recv = timeout(
-            Duration::from_millis(QUERY_TIMEOUT_MS),
-            self.socket.recv_from(&mut buf),
-        ).await;
-
-        let (len, _src) = match recv {
-            Ok(Ok((len, src))) => (len, src),
-            Ok(Err(e)) => return Err(format!("findnode recv failed: {}", e)),
-            Err(_)     => return Err("bootstrap query timed out".to_string()),
-        };
-
-        let (resp_token, nodes) = parse_found_nodes(&buf[..len])
-            .ok_or_else(|| "malformed FoundNodes response".to_string())?;
-
-        if resp_token != token {
-            return Err(format!("token mismatch: sent {} got {}", token, resp_token));
-        }
-
-        println!("[dht] bootstrap returned {} node(s)", nodes.len());
-
-        // Feed each returned node into the routing table.
-        for n in nodes {
-            if let Ok(addr) = n.addr.parse::<SocketAddr>() {
-                let node_id = NodeId(n.id);
-                self.resolver.dht.heard_from(node_id, addr);
+        let mut last_err = String::from("bootstrap query failed");
+        for attempt in 0..QUERY_RETRIES {
+            if let Err(e) = self.socket.send_to(&pkt, &self.bootstrap).await {
+                last_err = format!("findnode send failed: {}", e);
+                continue;
             }
+
+            let mut buf = [0u8; 2048];
+            let recv = timeout(
+                Duration::from_millis(QUERY_TIMEOUT_MS),
+                self.socket.recv_from(&mut buf),
+            ).await;
+
+            let (len, _src) = match recv {
+                Ok(Ok((len, src))) => (len, src),
+                Ok(Err(e)) => { last_err = format!("findnode recv failed: {}", e); continue; }
+                Err(_) => {
+                    last_err = "bootstrap query timed out".to_string();
+                    eprintln!("[dht] findnode attempt {}/{} timed out, retrying",
+                              attempt + 1, QUERY_RETRIES);
+                    continue;
+                }
+            };
+
+            let (resp_token, nodes) = match parse_found_nodes(&buf[..len]) {
+                Some(parsed) => parsed,
+                None => { last_err = "malformed FoundNodes response".to_string(); continue; }
+            };
+            if resp_token != token {
+                last_err = format!("token mismatch: sent {} got {}", token, resp_token);
+                continue;
+            }
+
+            println!("[dht] bootstrap returned {} node(s)", nodes.len());
+            for n in nodes {
+                if let Ok(addr) = n.addr.parse::<SocketAddr>() {
+                    let node_id = NodeId(n.id);
+                    self.resolver.dht.heard_from(node_id, addr);
+                }
+            }
+            return Ok(());
         }
 
-        Ok(())
+        Err(last_err)
     }
 }
 
