@@ -51,7 +51,7 @@ impl DriverManager {
             }
             Err(e) => {
                 self.audio_state = DriverState::Failed;
-                println!("[drivers] audio driver failed");
+                println!("[drivers] audio driver failed: {}", e);
             }
         }
 
@@ -63,7 +63,7 @@ impl DriverManager {
             }
             Err(e) => {
                 self.wifi_state = DriverState::Failed;
-                println!("[drivers] WiFi driver failed");
+                println!("[drivers] WiFi driver failed: {}", e);
             }
         }
 
@@ -75,7 +75,7 @@ impl DriverManager {
             }
             Err(e) => {
                 self.touch_state = DriverState::Failed;
-                println!("[drivers] touch driver failed");
+                println!("[drivers] touch driver failed: {}", e);
             }
         }
 
