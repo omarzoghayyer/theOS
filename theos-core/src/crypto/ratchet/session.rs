@@ -83,13 +83,17 @@ impl RatchetSession {
         header: &RatchetHeader,
         ciphertext: &[u8],
     ) -> Result<Vec<u8>, SessionError> {
-        let msg_key = self.ratchet.next_receiving_key(header)?;
+        // Stage on a trial copy so a forged or corrupted message cannot mutate
+        // live ratchet state; commit only once the AEAD authenticates.
+        let mut trial = self.ratchet.clone();
+        let msg_key = trial.next_receiving_key(header)?;
         let plaintext = crypto::decrypt(
             msg_key.as_bytes(),
             RATCHET_AEAD_COUNTER,
             RATCHET_AEAD_SESSION_ID,
             ciphertext,
         )?;
+        self.ratchet = trial;
         Ok(plaintext)
     }
 
@@ -206,5 +210,42 @@ mod tests {
         // Restored Bob continues the conversation seamlessly.
         let (h2, c2) = alice.encrypt_outgoing(b"second").unwrap();
         assert_eq!(bob_restored.decrypt_incoming(&h2, &c2).unwrap(), b"second");
+    }
+
+    #[test]
+    fn tampered_message_does_not_consume_ratchet_state() {
+        // A corrupted ciphertext must not advance the ratchet: the clean copy
+        // of the same message must still decrypt afterwards.
+        let (mut alice, mut bob) = session_pair();
+        let (h0, c0) = alice.encrypt_outgoing(b"real zero").unwrap();
+
+        let mut bad = c0.clone();
+        bad[0] ^= 0xff;
+        assert_eq!(
+            bob.decrypt_incoming(&h0, &bad),
+            Err(SessionError::Crypto(CryptoError::DecryptFailed))
+        );
+
+        // State was staged, not committed — the clean copy still works.
+        assert_eq!(bob.decrypt_incoming(&h0, &c0).unwrap(), b"real zero");
+    }
+
+    #[test]
+    fn forged_header_does_not_corrupt_ratchet() {
+        // A forged header claiming a new ratchet key would, under eager commit,
+        // rotate the ratchet on unauthenticated input and desync the session.
+        let (mut alice, mut bob) = session_pair();
+
+        let (h0, c0) = alice.encrypt_outgoing(b"hello").unwrap();
+        assert_eq!(bob.decrypt_incoming(&h0, &c0).unwrap(), b"hello");
+
+        // Well-formed ciphertext, but its header is forged with a bogus key.
+        let (real_h, real_c) = alice.encrypt_outgoing(b"decoy").unwrap();
+        let mut forged = real_h;
+        forged.ratchet_pub = [0x99u8; 32];
+        assert!(bob.decrypt_incoming(&forged, &real_c).is_err());
+
+        // No commit happened, so the genuine message still decrypts.
+        assert_eq!(bob.decrypt_incoming(&real_h, &real_c).unwrap(), b"decoy");
     }
 }

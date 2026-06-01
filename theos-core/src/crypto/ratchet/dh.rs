@@ -74,6 +74,14 @@ impl DhKeyPair {
     }
 }
 
+impl Clone for DhKeyPair {
+    fn clone(&self) -> Self {
+        // Rebuild from raw private bytes — avoids depending on StaticSecret: Clone
+        // across x25519-dalek versions. Same key in, identical keypair out.
+        Self::from_private_bytes(self.private_bytes())
+    }
+}
+
 /// Root-key KDF ("KDF_RK"). Current root key + DH output -> (new_root, chain_key).
 /// Used each DH-ratchet step (per round-trip).
 pub fn kdf_rk(root_key: &[u8; 32], dh_out: &[u8; 32]) -> ([u8; 32], [u8; 32]) {

@@ -45,6 +45,7 @@ impl MessageKey {
 ///
 /// Holds the current chain key and the index of the NEXT message it will
 /// produce. Advancing consumes the old chain key (overwritten in place).
+#[derive(Clone)]
 pub struct ChainKey {
     key: [u8; 32],
     index: u32,

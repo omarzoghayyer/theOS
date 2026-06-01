@@ -65,6 +65,7 @@ pub struct RatchetHeader {
     pub pn: u32,
 }
 
+#[derive(Clone)]
 pub struct DhRatchet {
     root_key: [u8; 32],
     self_kp: DhKeyPair,
