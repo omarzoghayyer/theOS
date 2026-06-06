@@ -5,8 +5,6 @@
 //
 // Implements Google SRE best practice: "Ping early, fail fast"
 
-use std::time::Duration;
-use tokio::time::sleep;
 use theos_core::ipc_protocol::IpcMessage;
 use crate::ipc_robustness::{ConnectionState, config};
 

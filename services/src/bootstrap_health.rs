@@ -3,8 +3,6 @@
 // Provides /health endpoint for Docker healthchecks and load balancers
 
 use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Simple HTTP health check server
 pub struct HealthCheckServer {

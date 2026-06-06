@@ -7,7 +7,6 @@ pub struct ReconnectManager {
     retry_count: u32,
     last_error: Option<String>,
 }
-use rand::Rng;
 impl ReconnectManager {
     pub fn new() -> Self {
         Self {

@@ -364,3 +364,8 @@ MigrationBackup/
 FodyWeavers.xsd.env
 
 .env
+.env
+.env.*
+*.pem
+*.key
+secrets/
