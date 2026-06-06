@@ -343,6 +343,9 @@ let mut call: Option<CallSurface> = None;
                 frame, ts.from, ts.to, incoming_y, orb_state
             );
         } else {
+             // Frame logging disabled for cleaner output
+            // Uncomment below to see per-frame state transitions:
+            /*
             match pipeline.active_surface {
                 ActiveSurface::AiShell => {
                     println!(
@@ -369,6 +372,7 @@ let mut call: Option<CallSurface> = None;
                     println!("[compositor] frame:{} {:?}", frame, pipeline.active_surface);
                 }
             }
+            */
         }
 
         // -- Frame timing -----------------------------------------------------
