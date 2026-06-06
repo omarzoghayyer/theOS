@@ -1,5 +1,5 @@
 # Dockerfile — theOS Bootstrap Server for Railway.app
-   FROM rust:1.75-slim as builder
+   FROM rust:1.80-slim as builder
    WORKDIR /app
    COPY . .
    RUN cargo build -p theos-daemon --release --target x86_64-unknown-linux-gnu
