@@ -1,33 +1,17 @@
 # Dockerfile — theOS Bootstrap Server for Railway.app
-  # Dockerfile — theOS Bootstrap Server for Railway.app
-  FROM rust:nightly-slim
-   WORKDIR /app
-   COPY . .
-   RUN cargo build -p theos-daemon --release --target x86_64-unknown-linux-gnu
+FROM rust:nightly-slim AS builder
+WORKDIR /app
+COPY . .
+RUN cargo build -p theos-daemon --release --target x86_64-unknown-linux-gnu
 
-   FROM debian:bookworm-slim
-   RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-   WORKDIR /app
-   COPY --from=builder /app/target/x86_64-unknown-linux-gnu/release/theos-daemon /app/bootstrap
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /app/target/x86_64-unknown-linux-gnu/release/theos-daemon /app/bootstrap
 
-   # Set bootstrap mode + port
-   ENV THEOS_MODE=bootstrap
-   ENV THEOS_PORT=7700
+# Set bootstrap mode + port
+ENV THEOS_MODE=bootstrap
+ENV THEOS_PORT=7700
 
-   EXPOSE 7700/udp
-   CMD ["/app/bootstrap"] as builder
-   WORKDIR /app
-   COPY . .
-   RUN cargo build -p theos-daemon --release --target x86_64-unknown-linux-gnu
-
-   FROM debian:bookworm-slim
-   RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-   WORKDIR /app
-   COPY --from=builder /app/target/x86_64-unknown-linux-gnu/release/theos-daemon /app/bootstrap
-
-   # Set bootstrap mode + port
-   ENV THEOS_MODE=bootstrap
-   ENV THEOS_PORT=7700
-
-   EXPOSE 7700/udp
-   CMD ["/app/bootstrap"]
+EXPOSE 7700/udp
+CMD ["/app/bootstrap"]
