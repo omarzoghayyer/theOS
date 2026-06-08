@@ -5,8 +5,6 @@
 
 use ed25519_dalek::{SigningKey, VerifyingKey, Signer, Verifier, Signature};
 use std::fmt;
-use std::fs;
-use std::path::Path;
 
 /// A 32-byte Ed25519 public key — this IS your theOS identity
 #[derive(Debug, Clone, PartialEq)]
@@ -87,53 +85,20 @@ impl KeyPair {
         self.x25519_identity().public_bytes()
     }
 
-    /// Load existing keypair from secure storage
-    /// Production: unseal from hardware enclave
-    /// Dev: load from /tmp/theos-identity (0600 permissions)
-    pub fn load() -> Option<Self> {
-        let path = storage_path();
-        if !Path::new(&path).exists() { return None; }
 
-        let data = fs::read(&path).ok()?;
-        if data.len() != 32 { return None; }
-
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&data[..32]);
-
-        let signing_key = SigningKey::from_bytes(&seed);
+    /// Construct a KeyPair from a raw 32-byte seed
+    /// Used by daemon on startup to restore identity from storage
+    pub fn from_seed_bytes(seed: &[u8; 32]) -> Self {
+        let signing_key = SigningKey::from_bytes(seed);
         let verifying_key = signing_key.verifying_key();
         let public = IdentityKey(verifying_key.to_bytes());
-
-        println!("[identity] loaded existing keypair");
-        Some(Self { public, signing_key })
+        Self { public, signing_key }
     }
 
-    /// Save keypair seed to secure storage
-    /// Production: seal in hardware enclave — never plaintext on disk
-    /// Dev: /tmp/theos-identity with 0600 permissions
-    pub fn save(&self) -> Result<(), String> {
-        let path = storage_path();
-        if let Some(parent) = Path::new(&path).parent() {
-            fs::create_dir_all(parent).ok();
-        }
-
-        // Save only the 32-byte seed — public key is derived from it
-        let seed = self.signing_key.to_bytes();
-        fs::write(&path, seed)
-            .map_err(|e| format!("write failed: {}", e))?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-                .map_err(|e| format!("chmod failed: {}", e))?;
-        }
-
-        println!("[identity] keypair saved securely");
-        Ok(())
+    /// Get the raw seed bytes for persistence
+    pub fn seed_bytes(&self) -> [u8; 32] {
+        self.signing_key.to_bytes()
     }
-
-    /// Sign a message with the private key — real Ed25519 signature
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
         let signature: Signature = self.signing_key.sign(message);
         signature.to_bytes().to_vec()
@@ -163,21 +128,7 @@ impl KeyPair {
             }
         }
     }
-}
 
-fn storage_path() -> String {
-    "/tmp/theos-identity".to_string()
-}
-
-#[allow(dead_code)] // fallback RNG path, kept for no-getrandom targets
-fn read_random_bytes() -> [u8; 32] {
-    let mut bytes = [0u8; 32];
-    if let Ok(data) = fs::read("/dev/urandom") {
-        for (i, b) in data.iter().take(32).enumerate() {
-            bytes[i] = *b;
-        }
-    }
-    bytes
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
