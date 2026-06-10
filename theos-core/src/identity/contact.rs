@@ -1,12 +1,13 @@
 // contact.rs — Contact Book
 // Stores trusted public keys with user-assigned names
 // This is your entire address book — no phone numbers anywhere
+//
+// File I/O lives in the daemon (services/src/identity_manager.rs); this
+// module provides serialize/deserialize primitives only. Phase 2 of the
+// theos-core std → no_std bridge.
 
 use super::keypair::IdentityKey;
 use std::collections::HashMap;
-use std::fs;
-
-const CONTACTS_PATH: &str = "/run/theos/contacts.json";
 
 /// A single trusted contact
 #[derive(Debug, Clone)]
@@ -44,45 +45,47 @@ impl ContactBook {
         Self { contacts: HashMap::new() }
     }
 
-    /// Load contact book from storage
-    pub fn load() -> Self {
-        let mut book = Self::new();
-        if let Ok(data) = fs::read_to_string(CONTACTS_PATH) {
-            // Production: decrypt with hardware key first
-            // Dev: parse simple line format "hex:name:timestamp"
-            for line in data.lines() {
-                let parts: Vec<&str> = line.splitn(3, ':').collect();
-                if parts.len() == 3 {
-                    if let Ok(key) = IdentityKey::from_hex(parts[0]) {
-                        let contact = Contact {
-                            name:      parts[2].to_string(),
-                            key:       key.clone(),
-                            added_at:  parts[1].parse().unwrap_or(0),
-                            last_seen: None,
-                            trusted:   true,
-                        };
-                        book.contacts.insert(parts[0].to_string(), contact);
-                    }
-                }
-            }
-        }
-        println!("[contacts] loaded {} contacts", book.contacts.len());
-        book
-    }
-
-    /// Save contact book to storage
-    pub fn save(&self) -> Result<(), String> {
-        if let Some(parent) = std::path::Path::new(CONTACTS_PATH).parent() {
-            fs::create_dir_all(parent).ok();
-        }
-        // Production: encrypt with hardware key before writing
+    /// Serialize the contact book to bytes for persistence.
+    ///
+    /// The daemon is responsible for writing these bytes to disk and
+    /// encrypting them at rest. This library does no file I/O.
+    ///
+    /// Format: one contact per line, `key_hex:added_at:name`.
+    pub fn to_bytes(&self) -> Vec<u8> {
         let data: String = self.contacts.values()
             .map(|c| format!("{}:{}:{}", c.key.to_hex(), c.added_at, c.name))
             .collect::<Vec<_>>()
             .join("\n");
-        fs::write(CONTACTS_PATH, data)
-            .map_err(|e| format!("save failed: {}", e))?;
-        Ok(())
+        data.into_bytes()
+    }
+
+    /// Deserialize a contact book from bytes.
+    ///
+    /// Mirrors the lenient parse behavior of the previous file-loading
+    /// path: malformed lines are silently skipped rather than failing
+    /// the whole load. Invalid UTF-8 returns an empty book.
+    pub fn from_bytes(data: &[u8]) -> Self {
+        let mut book = Self::new();
+        let text = match core::str::from_utf8(data) {
+            Ok(s) => s,
+            Err(_) => return book,
+        };
+        for line in text.lines() {
+            let parts: Vec<&str> = line.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                if let Ok(key) = IdentityKey::from_hex(parts[0]) {
+                    let contact = Contact {
+                        name:      parts[2].to_string(),
+                        key:       key.clone(),
+                        added_at:  parts[1].parse().unwrap_or(0),
+                        last_seen: None,
+                        trusted:   true,
+                    };
+                    book.contacts.insert(parts[0].to_string(), contact);
+                }
+            }
+        }
+        book
     }
 
     /// Add a new contact — this is the ONLY way someone can reach you
@@ -93,7 +96,7 @@ impl ContactBook {
         }
         println!("[contacts] added: {} ({})", contact.name, contact.key.short());
         self.contacts.insert(key_hex, contact);
-        self.save()
+        Ok(())
     }
 
     /// Remove a contact — they can no longer reach you
@@ -101,7 +104,6 @@ impl ContactBook {
         let key_hex = key.to_hex();
         if let Some(c) = self.contacts.remove(&key_hex) {
             println!("[contacts] removed: {}", c.name);
-            self.save()?;
         }
         Ok(())
     }
@@ -127,5 +129,55 @@ impl ContactBook {
 
     pub fn count(&self) -> usize {
         self.contacts.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::keypair::KeyPair;
+
+    fn fixture(name: &str) -> Contact {
+        let kp = KeyPair::generate();
+        Contact::new(name, kp.public.clone())
+    }
+
+    #[test]
+    fn to_bytes_from_bytes_round_trip_preserves_contacts() {
+        let mut book = ContactBook::new();
+        book.add(fixture("alice")).unwrap();
+        book.add(fixture("bob")).unwrap();
+        book.add(fixture("carol")).unwrap();
+
+        let bytes = book.to_bytes();
+        let restored = ContactBook::from_bytes(&bytes);
+
+        assert_eq!(restored.count(), 3);
+        for (k, v) in &book.contacts {
+            let r = restored.contacts.get(k).expect("contact missing after round trip");
+            assert_eq!(r.name,     v.name);
+            assert_eq!(r.added_at, v.added_at);
+            assert_eq!(r.key.to_hex(), v.key.to_hex());
+        }
+    }
+
+    #[test]
+    fn from_bytes_empty_returns_empty_book() {
+        let book = ContactBook::from_bytes(&[]);
+        assert_eq!(book.count(), 0);
+    }
+
+    #[test]
+    fn from_bytes_skips_malformed_lines() {
+        let mut book = ContactBook::new();
+        book.add(fixture("alice")).unwrap();
+        let mut bytes = book.to_bytes();
+        // Append garbage that should be silently skipped
+        bytes.extend_from_slice(b"\nnot:a:valid:contact:line:with:too:many:parts");
+        bytes.extend_from_slice(b"\nno_colons_at_all");
+        bytes.extend_from_slice(b"\nzz_bad_hex:0:partial");
+
+        let restored = ContactBook::from_bytes(&bytes);
+        assert_eq!(restored.count(), 1, "only the valid line should survive");
     }
 }
