@@ -1,0 +1,7 @@
+[package]
+name = "theos-driver-cs35l41"
+version = "0.1.0"
+edition = "2024"
+description = "Driver for the Cirrus Logic CS35L41 smart audio amplifier (no_std)"
+
+[dependencies]

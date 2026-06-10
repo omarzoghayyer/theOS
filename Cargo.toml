@@ -7,7 +7,9 @@ members = [
   "services/cap-broker",
   "tools/capctl",
   "theos-compositor",
-  "theos-core"
+  "theos-core",
+  "drivers/cs35l41",
+  "drivers/cs35l41"
 ]
 
 [profile.dev]
