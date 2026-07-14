@@ -9,7 +9,7 @@ members = [
   "theos-compositor",
   "theos-core",
   "drivers/cs35l41",
-  "drivers/cs35l41"
+  "drivers/decon"
 ]
 
 [profile.dev]

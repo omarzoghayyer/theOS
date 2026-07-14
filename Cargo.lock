@@ -2472,6 +2472,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "theos-driver-cs35l41"
+version = "0.1.0"
+
+[[package]]
+name = "theos-driver-decon"
+version = "0.1.0"
+
+[[package]]
 name = "theos-kernel"
 version = "0.1.0"
 
