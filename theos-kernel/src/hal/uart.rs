@@ -1,38 +1,27 @@
-use core::fmt;
+// hal/uart.rs -- UART backend selection
+//
+// Two backends, selected at compile time:
+//   - uart_exynos (default): real Samsung Exynos UART on Pixel 7 Pro /
+//     Tensor G2 (gs201) hardware.
+//   - uart_pl011 (`--features qemu`): ARM PL011 at 0x0900_0000, the UART
+//     QEMU's `-M virt` machine actually provides. Needed because virt has
+//     no Exynos UART at any address -- the Exynos driver's poll loop spins
+//     forever against unmapped MMIO if run there.
+//
+// Both backends expose the same API (init, write_byte, write_str,
+// UartWriter), so nothing above this module needs to know which is active.
 
-const UART_BASE: u64 = 0x09000000;
-const UART_DR:   u64 = 0x000;
-const UART_FR:   u64 = 0x018;
-const UART_FR_TXFF: u32 = 1 << 5;
+#[cfg(not(feature = "qemu"))]
+#[path = "uart_exynos.rs"]
+mod uart_exynos;
+#[cfg(not(feature = "qemu"))]
+pub use uart_exynos::*;
 
-pub fn init() {}
-
-pub fn write_byte(byte: u8) {
-    unsafe {
-        let fr = (UART_BASE + UART_FR) as *const u32;
-        let dr = (UART_BASE + UART_DR) as *mut u32;
-        while core::ptr::read_volatile(fr) & UART_FR_TXFF != 0 {}
-        core::ptr::write_volatile(dr, byte as u32);
-    }
-}
-
-pub fn write_str(s: &str) {
-    for byte in s.bytes() {
-        if byte == b'\n' {
-            write_byte(b'\r');
-        }
-        write_byte(byte);
-    }
-}
-
-pub struct UartWriter;
-
-impl fmt::Write for UartWriter {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        write_str(s);
-        Ok(())
-    }
-}
+#[cfg(feature = "qemu")]
+#[path = "uart_pl011.rs"]
+mod uart_pl011;
+#[cfg(feature = "qemu")]
+pub use uart_pl011::*;
 
 #[macro_export]
 macro_rules! print {

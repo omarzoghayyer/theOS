@@ -7,4 +7,10 @@ edition = "2024"
 name = "theos-kernel"
 path = "src/main.rs"
 
+[features]
+# Selects the PL011 UART backend (hal::uart_pl011) instead of the default
+# Exynos backend (hal::uart_exynos). QEMU's `-M virt` machine has a PL011
+# at 0x0900_0000 and no Exynos UART at any address -- see hal/uart.rs.
+qemu = []
+
 [dependencies]
