@@ -8,8 +8,7 @@ members = [
   "tools/capctl",
   "theos-compositor",
   "theos-core",
-  "drivers/cs35l41",
-  "drivers/decon"
+  "drivers/cs35l41"
 ]
 
 [profile.dev]
